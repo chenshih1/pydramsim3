@@ -1,0 +1,9 @@
+build/
+*.so
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.hypothesis/
+*.pyc
+dramsim3.json
+dramsim3.txt

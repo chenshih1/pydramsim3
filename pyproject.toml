@@ -1,0 +1,53 @@
+[build-system]
+requires = [
+    "scikit-build-core >= 0.10",
+    "pybind11 >= 2.6"
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pydramsim3"
+version = "0.1.0"
+description = "Python bindings for DRAMSim3 memory simulator"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Shi Chen", email = "chenshi8603@163.com" }]
+maintainers = [{ name = "Shi Chen", email = "chenshi8603@163.com" }]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed"
+]
+
+[tool.scikit-build]
+build-dir = "build/{wheel_tag}"
+build.verbose = false
+cmake.build-type = "Release"
+wheel.install-dir = "pydramsim3"
+wheel.expand-macos-universal-tags = false
+wheel.exclude = [
+    "pydramsim3/*.cpp",
+    "pydramsim3/*.hpp",
+]
+
+logging.level = "WARNING"
+
+[project.optional-dependencies]
+test = ["pytest >= 7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
