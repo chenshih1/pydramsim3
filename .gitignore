@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 dramsim3.json
 dramsim3.txt
+dist/
+.qoder/

@@ -20,18 +20,18 @@ static std::function<void(uint64_t)> to_callback(py::object obj) {
 PYBIND11_MODULE(_dramsim3, m) {
   m.doc() = "Python bindings for DRAMSim3 memory simulator";
 
-  py::class_<DRAMsim3Wrapper>(m, "MemorySystem")
+  py::class_<DRAMsim3Wrapper>(m, "DRAMsim3Wrapper")
       .def(
           py::init([](const std::string &config_file,
                       const std::string &working_dir,
-                      py::object read_callback, py::object write_callback) {
+                      py::object read_complete, py::object write_complete) {
             return new DRAMsim3Wrapper(config_file, working_dir,
-                                       to_callback(read_callback),
-                                       to_callback(write_callback));
+                                       to_callback(read_complete),
+                                       to_callback(write_complete));
           }),
           py::arg("config_file"), py::arg("working_dir"),
-          py::arg("read_callback") = py::none(),
-          py::arg("write_callback") = py::none())
+          py::arg("read_complete") = py::none(),
+          py::arg("write_complete") = py::none())
       .def_property_readonly("clock_period", &DRAMsim3Wrapper::clockPeriod)
       .def_property_readonly("queue_size", &DRAMsim3Wrapper::queueSize)
       .def_property_readonly("burst_size", &DRAMsim3Wrapper::burstSize)

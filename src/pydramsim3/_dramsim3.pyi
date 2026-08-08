@@ -1,12 +1,12 @@
 from typing import Callable, Optional
 
-class MemorySystem:
+class DRAMsim3Wrapper:
     def __init__(
         self,
         config_file: str,
         working_dir: str,
-        read_callback: Optional[Callable[[int], None]] = None,
-        write_callback: Optional[Callable[[int], None]] = None,
+        read_complete: Optional[Callable[[int], None]] = None,
+        write_complete: Optional[Callable[[int], None]] = None,
     ) -> None: ...
 
     def print_stats(self) -> None: ...
