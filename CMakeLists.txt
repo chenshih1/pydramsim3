@@ -19,19 +19,6 @@ add_subdirectory("${DRAMSIM3_DIR}" "${DRAMSIM3_DIR}/build")
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 
-math(EXPR _PY_MAJOR "${Python_VERSION_MAJOR}" OUTPUT_FORMAT DECIMAL)
-math(EXPR _PY_MINOR "${Python_VERSION_MINOR}" OUTPUT_FORMAT DECIMAL)
-
-if(_PY_MAJOR GREATER_EQUAL 3 AND _PY_MINOR GREATER_EQUAL 12)
-    set(MIN_PYBIND11_VERSION "2.11.0")
-elseif(_PY_MAJOR GREATER_EQUAL 3 AND _PY_MINOR EQUAL 11)
-    set(MIN_PYBIND11_VERSION "2.9.0")
-else()
-    set(MIN_PYBIND11_VERSION "2.6.0")
-endif()
-
-message(STATUS "Detected Python ${Python_VERSION} requires pybind11 >= ${MIN_PYBIND11_VERSION}")
-
 execute_process(
     COMMAND "${Python_EXECUTABLE}" -c "
 import sysconfig, site;
@@ -63,19 +50,10 @@ find_package(pybind11 CONFIG QUIET)
 if(NOT pybind11_FOUND)
     message(FATAL_ERROR
         "pybind11 not found for Python ${Python_VERSION}.\n"
-        "Required version: >= ${MIN_PYBIND11_VERSION}\n\n"
         "Install with one of:\n"
-        "  pip install \"pybind11>=${MIN_PYBIND11_VERSION}\"\n"
-        "  conda install -c conda-forge \"pybind11>=${MIN_PYBIND11_VERSION}\"\n\n"
+        "  pip install \"pybind11>=2.11\"\n"
+        "  conda install -c conda-forge \"pybind11>=2.11\"\n\n"
         "Note: System packages (e.g., apt install pybind11-dev) may be outdated."
-    )
-endif()
-
-if(pybind11_VERSION VERSION_LESS ${MIN_PYBIND11_VERSION})
-    message(FATAL_ERROR
-        "Found pybind11 ${pybind11_VERSION}, but Python ${Python_VERSION} requires >= ${MIN_PYBIND11_VERSION}.\n"
-        "Please upgrade pybind11:\n"
-        "  pip install --upgrade \"pybind11>=${MIN_PYBIND11_VERSION}\""
     )
 endif()
 
@@ -84,7 +62,7 @@ message(STATUS "Using pybind11 ${pybind11_VERSION}")
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/pydramsim3")
 set(SOURCES
     "${SRC_DIR}/_dramsim3.cpp"
-    "${SRC_DIR}/dramsim3_wrapper.cpp"
+    "${SRC_DIR}/sim_engine.cpp"
 )
 
 pybind11_add_module(_dramsim3 MODULE ${SOURCES})

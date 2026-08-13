@@ -3,8 +3,9 @@
 
 The public entry point is :class:`MemoryController`, a gem5-aligned DRAM
 controller with flow control, outstanding tracking, and per-transaction
-latency.  The thin C++ binding (:mod:`pydramsim3._dramsim3.DRAMsim3Wrapper`)
-is an internal implementation detail, mirroring gem5's ``DRAMsim3Wrapper``.
+latency.  The C++ engine (:mod:`pydramsim3._dramsim3.SimEngine`) is an
+internal implementation detail: the hot loop lives there, with bulk event
+export and numpy trace driving for maximum throughput.
 """
 
 from __future__ import annotations

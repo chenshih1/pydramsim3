@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: "${{ matrix.os }} / Python ${{ matrix.python }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install package (builds the C++ extension via scikit-build-core)
+        run: pip install ".[test]"
+      - name: Run tests
+        run: pytest -q
+
+  package:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build frontend
+        run: pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Verify wheel bundles runtime assets
+        run: |
+          python - <<'EOF'
+          import pathlib, zipfile
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(wheel).namelist()
+          required = [
+              "pydramsim3/_dramsim3",
+              "pydramsim3/_dramsim3.pyi",
+              "pydramsim3/py.typed",
+              "pydramsim3/configs/DDR4_8Gb_x8_2400.ini",
+              "pydramsim3/libdramsim3",
+          ]
+          missing = [r for r in required if not any(r in n for n in names)]
+          assert not missing, f"wheel missing: {missing}"
+          print(f"wheel OK: {len(names)} entries")
+          EOF
+      - name: Verify sdist contains the DRAMsim3 submodule
+        run: |
+          python - <<'EOF'
+          import pathlib, tarfile
+          sdist = next(pathlib.Path("dist").glob("*.tar.gz"))
+          names = tarfile.open(sdist).getnames()
+          missing = [n for n in ("third_party/dramsim3/CMakeLists.txt",
+                                 "src/pydramsim3/sim_engine.cpp")
+                     if not any(n in x for x in names)]
+          assert not missing, f"sdist missing: {missing}"
+          print(f"sdist OK: {len(names)} entries")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

@@ -9,33 +9,39 @@ __all__ = ["LatencyTracker"]
 
 
 class LatencyStats:
-    """Summary statistics for a collected latency series."""
+    """Summary statistics for a collected latency series.
 
-    __slots__ = ("_data",)
+    The data is sorted once at construction; count/sum/min/max are
+    precomputed so repeated property access is O(1).
+    """
+
+    __slots__ = ("_data", "_count", "_sum")
 
     def __init__(self, data: list[int]) -> None:
         self._data = sorted(data)
+        self._count = len(self._data)
+        self._sum = sum(self._data)
 
     def __len__(self) -> int:
-        return len(self._data)
+        return self._count
 
     def __repr__(self) -> str:
         if not self._data:
             return "LatencyStats(n=0)"
         return (
-            f"LatencyStats(n={len(self)}, avg={self.avg:.1f}, "
+            f"LatencyStats(n={self._count}, avg={self.avg:.1f}, "
             f"p50={self.p50}, p99={self.p99}, max={self.max})"
         )
 
     @property
     def count(self) -> int:
-        return len(self._data)
+        return self._count
 
     @property
     def avg(self) -> float:
         if not self._data:
             return 0.0
-        return sum(self._data) / len(self._data)
+        return self._sum / self._count
 
     @property
     def min(self) -> int:
@@ -68,8 +74,8 @@ class LatencyStats:
     def _percentile(self, pct: float) -> int:
         if not self._data:
             return 0
-        idx = int(len(self._data) * pct)
-        return self._data[min(idx, len(self._data) - 1)]
+        idx = int(self._count * pct)
+        return self._data[min(idx, self._count - 1)]
 
     @property
     def values(self) -> list[int]:
@@ -91,33 +97,49 @@ class LatencyTracker:
         mc.replay(trace)
 
         print(tracker.read_stats.avg)
-        print(tracker.write_stats.p99)
+        print(tracker.read_stats.p99)
+
+    Summary statistics are computed lazily and cached; they are
+    invalidated automatically as new latencies arrive.
     """
 
     def __init__(self) -> None:
         self._read_latencies: list[int] = []
         self._write_latencies: list[int] = []
+        self._read_stats: Optional[LatencyStats] = None
+        self._write_stats: Optional[LatencyStats] = None
+        self._all_stats: Optional[LatencyStats] = None
 
     def on_read(self, addr: int, latency: int) -> None:
         """Callback for ``MemoryController(read_complete=...)``."""
         self._read_latencies.append(latency)
+        self._read_stats = None
+        self._all_stats = None
 
     def on_write(self, addr: int, latency: int) -> None:
         """Callback for ``MemoryController(write_complete=...)``."""
         self._write_latencies.append(latency)
+        self._write_stats = None
+        self._all_stats = None
 
     @property
     def read_stats(self) -> LatencyStats:
-        return LatencyStats(self._read_latencies)
+        if self._read_stats is None:
+            self._read_stats = LatencyStats(self._read_latencies)
+        return self._read_stats
 
     @property
     def write_stats(self) -> LatencyStats:
-        return LatencyStats(self._write_latencies)
+        if self._write_stats is None:
+            self._write_stats = LatencyStats(self._write_latencies)
+        return self._write_stats
 
     @property
     def all_stats(self) -> LatencyStats:
         """Combined read + write latencies."""
-        return LatencyStats(self._read_latencies + self._write_latencies)
+        if self._all_stats is None:
+            self._all_stats = LatencyStats(self._read_latencies + self._write_latencies)
+        return self._all_stats
 
     @property
     def num_reads(self) -> int:
@@ -131,6 +153,9 @@ class LatencyTracker:
         """Clear all collected latencies."""
         self._read_latencies.clear()
         self._write_latencies.clear()
+        self._read_stats = None
+        self._write_stats = None
+        self._all_stats = None
 
     def summary(self) -> str:
         """One-line summary suitable for logging."""

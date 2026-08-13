@@ -93,7 +93,17 @@ print(tracker.summary())
 
 **`replay(trace, gap_cycles=0)`** — drives a `(addr, is_write)` sequence with automatic backpressure handling and a final `drain()`. Accepts any iterable (list, generator, file parser). `gap_cycles` inserts idle cycles between transactions.
 
-**`drain(max_cycles=100_000)`** — ticks until all outstanding transactions complete. Raises `RuntimeError` on timeout.
+**`run_trace(addrs, writes, gap_cycles=0, drain=True)`** — the high-throughput variant for numpy users: `addrs` (uint64) and `writes` (bool) numpy arrays drive the *entire* loop in C++ (submission, backpressure waits, gap cycles, drain) with the GIL released — a single Python-to-C++ crossing per trace. Zero-copy when the arrays are C-contiguous with the right dtypes; identical semantics (and cycle counts) to `replay()`:
+
+```python
+import numpy as np
+
+addrs = (0x1000 + np.arange(1_000_000) * 64).astype(np.uint64)
+writes = (np.arange(1_000_000) % 4 == 3)
+total_cycles = mc.run_trace(addrs, writes)
+```
+
+**`drain(max_cycles=10_000_000)`** — ticks until all outstanding transactions complete. Raises `RuntimeError` on timeout.
 
 **`LatencyTracker`** — callback-compatible collector with percentile reporting:
 
@@ -187,11 +197,17 @@ mc.stats_txt_path   # -> working_dir/dramsim3.txt
 
 ### Internal binding
 
-The thin C++ binding `pydramsim3._dramsim3.DRAMsim3Wrapper` mirrors gem5's
-`DRAMsim3Wrapper` (constructor + `can_accept`/`enqueue`/`tick` +
-`clock_period`/`queue_size`/`burst_size` + `print_stats`/`reset_stats`/`set_callbacks`).
-It is an internal implementation detail used by `MemoryController` — not part of
-the public API.
+`pydramsim3._dramsim3.SimEngine` is the C++ hot loop behind `MemoryController`:
+submission (`try_enqueue`), batched ticking (`tick(n)`), backpressure waits
+(`tick_until_capacity`), bulk trace driving (`run_trace` with zero-copy numpy
+arrays), outstanding tracking, and per-transaction latency all live in C++.
+Completion events are exported in bulk — as Python lists
+(`take_read_events`/`take_write_events`) or numpy arrays (`*_np` variants) —
+instead of per-event Python callbacks.  `tick(n)`/`drain()`/
+`tick_until_capacity()`/`run_trace()` release the GIL while DRAMsim3 runs;
+every time-advancing method returns the number of cycles advanced, and
+`cycle` exposes the absolute simulation clock.  Not part of the public API —
+use `MemoryController` unless you need raw engine control.
 
 ### `MemoryController`
 
@@ -228,8 +244,9 @@ MemoryController.from_config(config_name, working_dir=None, *, read_complete=Non
 | `submit(addr, is_write) -> bool` | Submit transaction; False = backpressure (gem5 `recvTimingReq`) |
 | `tick()` | Advance one cycle; clears retry when space available (gem5 `tick`) |
 | `run(cycles) -> int` | Advance N cycles |
-| `drain(max_cycles=100_000) -> int` | Tick until all outstanding complete; returns cycles used |
+| `drain(max_cycles=10_000_000) -> int` | Tick until all outstanding complete; returns cycles used |
 | `replay(trace, gap_cycles=0) -> int` | Drive a `(addr, is_write)` sequence with backpressure + drain |
+| `run_trace(addrs, writes, gap_cycles=0, drain=True) -> int` | Numpy bulk driver; whole loop in C++, GIL released, zero-copy |
 | `print_stats()` | Flush stats to output files |
 | `get_stats() -> dict` | Parse and return JSON stats |
 | `reset_stats()` | Reset accumulated statistics |

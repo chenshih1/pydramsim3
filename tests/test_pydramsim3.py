@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import pydramsim3
@@ -10,7 +11,7 @@ from pydramsim3 import (
     configs_dir,
     list_configs,
 )
-from pydramsim3._dramsim3 import DRAMsim3Wrapper
+from pydramsim3._dramsim3 import SimEngine
 
 
 # ---------------------------------------------------------------------------
@@ -38,96 +39,240 @@ class TestConfigDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# Internal DRAMsim3Wrapper binding (gem5-aligned low-level interface)
+# SimEngine — high-performance C++ hot loop
 # ---------------------------------------------------------------------------
 
-def _make_wrapper(tmp_path, read_cb=None, write_cb=None):
-    cfg = str(configs_dir() / "DDR4_8Gb_x8_2400.ini")
-    return DRAMsim3Wrapper(cfg, str(tmp_path), read_cb, write_cb)
+class TestSimEngine:
+    """Tests the C++ SimEngine (bulk events, batching, backpressure waits)."""
 
-
-class TestInternalBinding:
-    """Tests the thin C++ binding mirroring gem5's ``DRAMsim3Wrapper``."""
+    @staticmethod
+    def _make(tmp_path, collect=True):
+        cfg = str(configs_dir() / "DDR4_8Gb_x8_2400.ini")
+        return SimEngine(cfg, str(tmp_path), collect)
 
     def test_construct(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        assert w.clock_period > 0
-        assert w.queue_size > 0
-        assert w.burst_size > 0
+        e = self._make(tmp_path)
+        assert e.clock_period > 0
+        assert e.queue_size == 32
+        assert e.burst_size == 64
+        assert e.cycle == 0
 
-    def test_properties_ddr4(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        assert 0.5 < w.clock_period < 2.0  # DDR4-2400 tCK ≈ 0.83ns
-        assert w.queue_size == 32
-        assert w.burst_size == 64  # 8 bytes * 8 burst length
+    def test_tick_returns_cycles_and_advances_clock(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.tick(100) == 100
+        assert e.cycle == 100
+        e.tick()
+        assert e.cycle == 101
 
-    def test_can_accept_and_enqueue(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        assert w.can_accept(0x1000, False)
-        w.enqueue(0x1000, False)
+    def test_drain_returns_cycles_used(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.drain() == 0
 
-    def test_tick(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        w.tick()
+    def test_take_read_events_np(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x1000, False)
+        e.tick(500)
+        addrs, lats = e.take_read_events_np()
+        assert addrs.dtype == np.uint64
+        assert addrs.tolist() == [0x1000]
+        assert lats.tolist()[0] > 0
+        # buffers cleared after take
+        addrs, _ = e.take_read_events_np()
+        assert len(addrs) == 0
 
-    def test_read_completion(self, tmp_path):
-        done = []
-        w = _make_wrapper(tmp_path, read_cb=lambda a: done.append(a))
-        w.enqueue(0x1000, False)
-        for _ in range(2000):
-            w.tick()
-        assert 0x1000 in done
+    def test_take_write_events_np(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x2000, True)
+        e.tick(10)
+        addrs, _ = e.take_write_events_np()
+        assert addrs.tolist() == [0x2000]
 
-    def test_write_completion(self, tmp_path):
-        done = []
-        w = _make_wrapper(tmp_path, write_cb=lambda a: done.append(a))
-        w.enqueue(0x2000, True)
-        for _ in range(2000):
-            w.tick()
-        assert 0x2000 in done
+    def test_try_enqueue_and_take_read_events(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.try_enqueue(0x1000, False)
+        e.tick(500)
+        addrs, lats = e.take_read_events()
+        assert addrs == [0x1000]
+        assert len(lats) == 1 and lats[0] > 0
 
-    def test_multiple_transactions(self, tmp_path):
-        reads = []
-        w = _make_wrapper(tmp_path, read_cb=lambda a: reads.append(a))
-        for i in range(10):
-            a = 0x1000 + i * 64
-            if w.can_accept(a, False):
-                w.enqueue(a, False)
-        for _ in range(2000):
-            w.tick()
-        assert len(reads) == 10
+    def test_take_events_clears_buffer(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x1000, False)
+        e.tick(500)
+        addrs, _ = e.take_read_events()
+        assert len(addrs) == 1
+        addrs, _ = e.take_read_events()
+        assert addrs == []
 
-    def test_set_callbacks_hotswap(self, tmp_path):
-        first, second = [], []
-        w = _make_wrapper(tmp_path, read_cb=lambda a: first.append(a))
-        w.enqueue(0x1000, False)
-        for _ in range(2000):
-            w.tick()
-        assert len(first) == 1
-        assert len(second) == 0
+    def test_write_events(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x2000, True)
+        e.tick(10)
+        addrs, lats = e.take_write_events()
+        assert addrs == [0x2000]
 
-        w.set_callbacks(read_complete=lambda a: second.append(a))
-        w.enqueue(0x2000, False)
-        for _ in range(2000):
-            w.tick()
-        assert len(first) == 1  # not called again
-        assert len(second) == 1
+    def test_backpressure_at_queue_size(self, tmp_path):
+        e = self._make(tmp_path, collect=False)
+        accepted = 0
+        while e.try_enqueue(0x1000 + accepted * 64, False):
+            accepted += 1
+        assert accepted == e.queue_size
+        assert not e.try_enqueue(0x9999, False)
 
-    def test_print_stats_creates_files(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        w.enqueue(0x1000, False)
-        for _ in range(2000):
-            w.tick()
-        w.print_stats()
-        assert (Path(tmp_path) / "dramsim3.json").exists()
-        assert (Path(tmp_path) / "dramsim3.txt").exists()
+    def test_tick_until_capacity_waits(self, tmp_path):
+        e = self._make(tmp_path, collect=False)
+        accepted = 0
+        while e.try_enqueue(0x1000 + accepted * 64, False):
+            accepted += 1
+        assert accepted == e.queue_size
+        # queue is now full; waiting must advance cycles and free a slot
+        addr = 0x1000 + accepted * 64
+        n = e.tick_until_capacity(addr, False)
+        assert n > 0
+        assert e.try_enqueue(addr, False)
 
-    def test_reset_stats(self, tmp_path):
-        w = _make_wrapper(tmp_path)
-        w.enqueue(0x1000, False)
-        for _ in range(2000):
-            w.tick()
-        w.reset_stats()  # should not raise
+    def test_tick_until_capacity_returns_zero_when_free(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.tick_until_capacity(0x1000, False) == 0
+
+    def test_drain(self, tmp_path):
+        e = self._make(tmp_path, collect=False)
+        for i in range(16):
+            assert e.try_enqueue(0x1000 + i * 64, False)
+        assert e.num_outstanding() == 16
+        cycles = e.drain(1_000_000)
+        assert cycles > 0
+        assert e.num_outstanding() == 0
+
+    def test_drain_empty_returns_zero(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.drain(1000) == 0
+
+    def test_set_collect_clears_events(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x1000, False)
+        e.tick(500)
+        e.set_collect(False)
+        addrs, _ = e.take_read_events()
+        assert addrs == []
+
+    def test_multiple_completions_ordered(self, tmp_path):
+        e = self._make(tmp_path)
+        for i in range(4):
+            e.try_enqueue(0x1000, False)
+        e.tick(1000)
+        addrs, lats = e.take_read_events()
+        assert len(addrs) == 4
+        # FIFO per address: latencies non-decreasing
+        assert lats == sorted(lats)
+
+    def test_write_buffer_backpressure_no_deadlock(self, tmp_path):
+        """Regression: DRAMsim3 write callbacks fire one cycle after submit,
+        so the write_buffer_ can stay full while the outstanding counter
+        reads zero; waiting must key on DRAMsim3's own acceptance check."""
+        e = self._make(tmp_path, collect=False)
+        for i in range(300):
+            while not e.try_enqueue(0x1000 + i * 64, True):
+                e.tick_until_capacity(0x1000 + i * 64, True)
+        e.drain(10_000_000)
+        assert e.num_outstanding() == 0
+
+    def test_sustained_mixed_replay_no_deadlock(self, tmp_path):
+        """Regression: sustained mixed traffic used to busy-spin in Python."""
+        mc = MemoryController.from_config(
+            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path)
+        )
+        trace = [(0x1000 + i * 64, i % 2 == 1) for i in range(500)]
+        cycles = mc.replay(trace)
+        assert cycles > 0
+        assert mc.num_outstanding == 0
+
+
+# ---------------------------------------------------------------------------
+# run_trace — numpy bulk driver
+# ---------------------------------------------------------------------------
+
+class TestRunTrace:
+    """Tests the numpy zero-copy trace driver (C++ hot loop)."""
+
+    @staticmethod
+    def _make_trace(n, stride=64, write_odd=True):
+        addrs = (0x1000 + np.arange(n) * stride).astype(np.uint64)
+        writes = np.arange(n) % 2 == 1 if write_odd else np.zeros(n, dtype=bool)
+        return addrs, writes
+
+    @staticmethod
+    def _mc(tmp_path, **kw):
+        return MemoryController.from_config(
+            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path), **kw
+        )
+
+    def test_matches_replay_cycles(self, tmp_path):
+        addrs, writes = self._make_trace(256)
+        c1 = self._mc(tmp_path).replay(
+            [(int(a), bool(w)) for a, w in zip(addrs, writes)]
+        )
+        c2 = self._mc(tmp_path).run_trace(addrs, writes)
+        assert c1 == c2
+
+    def test_cycle_counter_advances(self, tmp_path):
+        mc = self._mc(tmp_path)
+        addrs, writes = self._make_trace(16)
+        cycles = mc.run_trace(addrs, writes)
+        assert cycles > 0
+        assert mc.current_cycle == cycles
+
+    def test_callbacks_receive_events(self, tmp_path):
+        reads, writes = [], []
+        mc = self._mc(
+            tmp_path,
+            read_complete=lambda a, l: reads.append(a),
+            write_complete=lambda a, l: writes.append(a),
+        )
+        addrs, wflags = self._make_trace(64)
+        mc.run_trace(addrs, wflags)
+        assert len(reads) == 32
+        assert len(writes) == 32
+        assert mc.num_outstanding == 0
+
+    def test_empty_trace(self, tmp_path):
+        mc = self._mc(tmp_path)
+        a = np.zeros(0, dtype=np.uint64)
+        w = np.zeros(0, dtype=bool)
+        assert mc.run_trace(a, w) == 0
+
+    def test_drain_false(self, tmp_path):
+        mc = self._mc(tmp_path)
+        addrs, writes = self._make_trace(16, write_odd=False)
+        mc.run_trace(addrs, writes, drain=False)
+        assert mc.num_outstanding > 0
+        mc.drain()
+        assert mc.num_outstanding == 0
+
+    def test_length_mismatch(self, tmp_path):
+        mc = self._mc(tmp_path)
+        with pytest.raises(ValueError):
+            mc.run_trace(np.zeros(4, dtype=np.uint64), np.zeros(3, dtype=bool))
+
+    def test_accepts_lists(self, tmp_path):
+        mc = self._mc(tmp_path)
+        mc.run_trace([0x1000, 0x1040, 0x1080], [False, False, False])
+        mc.drain()
+        assert mc.num_outstanding == 0
+
+    def test_strided_views(self, tmp_path):
+        mc = self._mc(tmp_path)
+        addrs, writes = self._make_trace(128, write_odd=False)
+        cycles = mc.run_trace(addrs[::2], writes[::2])
+        assert cycles > 0
+        mc.drain()
+        assert mc.num_outstanding == 0
+
+    def test_gap_cycles(self, tmp_path):
+        addrs, writes = self._make_trace(16)
+        c0 = self._mc(tmp_path).run_trace(addrs, writes)
+        c1 = self._mc(tmp_path).run_trace(addrs, writes, gap_cycles=50)
+        assert c1 > c0
 
 
 # ---------------------------------------------------------------------------

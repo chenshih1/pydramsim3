@@ -3,20 +3,28 @@
 
 Mirrors the flow-control and outstanding-tracking semantics of
 gem5's ``src/mem/dramsim3.cc`` without SimObject/Port/Event coupling.
+
+The hot loop (submission, ticking, outstanding tracking, latency) lives in
+the C++ :class:`_dramsim3.SimEngine`; this module is a thin Python shell
+adding gem5-style flow control, retry semantics and optional user callbacks.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from ._dramsim3 import DRAMsim3Wrapper
+import numpy as np
+import numpy.typing as npt
+
+from ._dramsim3 import SimEngine
 
 __all__ = ["MemoryController"]
 
 logger = logging.getLogger(__name__)
+
+_CALLBACK = Callable[[int, int], None]
 
 
 class MemoryController:
@@ -45,8 +53,8 @@ class MemoryController:
         config_file: str,
         working_dir: Optional[str] = None,
         *,
-        read_complete: Optional[Callable[[int, int], None]] = None,
-        write_complete: Optional[Callable[[int, int], None]] = None,
+        read_complete: Optional[_CALLBACK] = None,
+        write_complete: Optional[_CALLBACK] = None,
         burst_size: Optional[int] = None,
     ) -> None:
         if working_dir is None:
@@ -54,29 +62,31 @@ class MemoryController:
         self._working_dir = Path(working_dir)
         self._config_file = Path(config_file)
 
+        # Callback backing fields (private properties below).
+        self.__user_read_cb: Optional[_CALLBACK] = None
+        self.__user_write_cb: Optional[_CALLBACK] = None
+        self._collect: bool = (read_complete is not None) or (write_complete is not None)
+
+        self._engine = SimEngine(
+            str(config_file),
+            working_dir,
+            collect_events=self._collect,
+        )
+
+        # Cached invariants: avoid per-submit crossing into C++.
+        self._queue_size = self._engine.queue_size
+        self._burst_size = self._engine.burst_size
+
+        # Goes through the property setters, which keep the engine's
+        # event-collection flag in sync.
         self._user_read_cb = read_complete
         self._user_write_cb = write_complete
 
-        self._wrapper = DRAMsim3Wrapper(
-            str(config_file),
-            working_dir,
-            self._on_read_complete,
-            self._on_write_complete,
-        )
-
-        if burst_size is not None and burst_size != self._wrapper.burst_size:
+        if burst_size is not None and burst_size != self._burst_size:
             raise ValueError(
                 f"burst_size {burst_size} does not match DRAMsim3 "
-                f"configured burst size {self._wrapper.burst_size}"
+                f"configured burst size {self._burst_size}"
             )
-
-        # gem5: std::unordered_map<Addr, std::queue<PacketPtr>>
-        self._outstanding_reads: dict[int, deque[int]] = {}
-        self._outstanding_writes: dict[int, deque[int]] = {}
-
-        # gem5: nbrOutstandingReads / nbrOutstandingWrites
-        self._nbr_outstanding_reads: int = 0
-        self._nbr_outstanding_writes: int = 0
 
         # gem5: retryReq
         self._retry_req: bool = False
@@ -91,8 +101,8 @@ class MemoryController:
         config_name: str,
         working_dir: Optional[str] = None,
         *,
-        read_complete: Optional[Callable[[int, int], None]] = None,
-        write_complete: Optional[Callable[[int, int], None]] = None,
+        read_complete: Optional[_CALLBACK] = None,
+        write_complete: Optional[_CALLBACK] = None,
         burst_size: Optional[int] = None,
     ) -> MemoryController:
         """Create from a bundled config name (e.g. ``"DDR4_8Gb_x8_2400"``)."""
@@ -140,74 +150,55 @@ class MemoryController:
         Corresponds to gem5 ``DRAMsim3::recvTimingReq``.
         """
         if self._retry_req:
-            logger.debug("cycle %d: submit rejected (retry pending)", self._current_cycle)
             return False
 
-        can_accept = self.num_outstanding < self._wrapper.queue_size
-
-        if can_accept:
-            if not self._wrapper.can_accept(addr, is_write):
-                self._retry_req = True
-                logger.debug("cycle %d: submit rejected (dramsim3 queue full)", self._current_cycle)
-                return False
-
-            if not is_write:
-                self._outstanding_reads.setdefault(addr, deque()).append(
-                    self._current_cycle
-                )
-                self._nbr_outstanding_reads += 1
-            else:
-                self._outstanding_writes.setdefault(addr, deque()).append(
-                    self._current_cycle
-                )
-                self._nbr_outstanding_writes += 1
-
-            self._wrapper.enqueue(addr, is_write)
-            return True
-        else:
+        if not self._engine.try_enqueue(addr, is_write):
             self._retry_req = True
-            logger.debug(
-                "cycle %d: submit rejected (outstanding %d >= queue_size %d)",
-                self._current_cycle, self.num_outstanding, self._wrapper.queue_size,
-            )
             return False
+        return True
 
-    def tick(self) -> None:
-        """Advance one clock cycle.
+    def tick(self, cycles: int = 1) -> int:
+        """Advance *cycles* clock cycles; returns cycles advanced.
 
         Corresponds to gem5 ``DRAMsim3::tick``.
         """
-        self._wrapper.tick()
-        self._current_cycle += 1
+        if cycles <= 0:
+            return 0
+        self._engine.tick(cycles)
+        self._current_cycle += cycles
+        if self._collect:
+            self._dispatch_completions()
 
-        if self._retry_req and self.num_outstanding < self._wrapper.queue_size:
+        if self._retry_req and self.num_outstanding < self._queue_size:
             self._retry_req = False
-            logger.debug("cycle %d: retry cleared (outstanding %d)", self._current_cycle, self.num_outstanding)
+        return cycles
 
     def run(self, cycles: int) -> int:
         """Advance *cycles* ticks.  Returns the number of cycles executed."""
-        for _ in range(cycles):
-            self.tick()
-        return cycles
+        return self.tick(cycles)
 
-    def drain(self, max_cycles: int = 100_000) -> int:
+    def drain(self, max_cycles: int = 10_000_000) -> int:
         """Tick until all outstanding transactions complete.
 
         Returns the number of cycles consumed.  Raises ``RuntimeError``
         if transactions are still outstanding after *max_cycles*.
         """
-        for i in range(max_cycles):
-            if self.num_outstanding == 0:
-                if i > 0:
-                    logger.info("drain completed in %d cycles (cycle %d)", i, self._current_cycle)
-                return i
-            self.tick()
+        if self.num_outstanding == 0:
+            return 0
+        cycles = self._engine.drain(max_cycles)
+        self._current_cycle += cycles
+        if self._collect:
+            self._dispatch_completions()
         if self.num_outstanding != 0:
             raise RuntimeError(
                 f"drain: {self.num_outstanding} transactions still "
                 f"outstanding after {max_cycles} cycles"
             )
-        return max_cycles
+        if self._retry_req:
+            self._retry_req = False
+        if cycles > 0:
+            logger.info("drain completed in %d cycles (cycle %d)", cycles, self._current_cycle)
+        return cycles
 
     def replay(
         self,
@@ -237,7 +228,14 @@ class MemoryController:
         count = 0
         for addr, is_write in trace:
             while not self.submit(addr, is_write):
-                self.tick()
+                # Backpressure: wait for capacity inside C++ (single crossing
+                # instead of a Python submit/tick ping-pong per cycle).  The
+                # precise per-transaction acceptance check is done in C++.
+                n = self._engine.tick_until_capacity(addr, is_write)
+                self._current_cycle += n
+                if self._collect:
+                    self._dispatch_completions()
+                self._retry_req = False
             count += 1
             if count % 1000 == 0:
                 logger.debug("replay: %d transactions submitted (cycle %d)", count, self._current_cycle)
@@ -248,48 +246,124 @@ class MemoryController:
         logger.info("replay completed: %d transactions in %d cycles", count, elapsed)
         return elapsed
 
-    # -- gem5 readComplete / writeComplete ---------------------------------
+    def run_trace(
+        self,
+        addrs: npt.NDArray[np.uint64],
+        writes: npt.NDArray[np.bool_],
+        *,
+        gap_cycles: int = 0,
+        drain: bool = True,
+    ) -> int:
+        """Drive a trace stored in numpy arrays, entirely inside C++.
 
-    def _on_read_complete(self, addr: int) -> None:
-        q = self._outstanding_reads[addr]
-        submit_cycle = q.popleft()
-        if not q:
-            del self._outstanding_reads[addr]
+        Parameters
+        ----------
+        addrs:
+            Numpy array of uint64 addresses (C-contiguous for zero-copy).
+        writes:
+            Numpy array of bools, same length as ``addrs``.
+        gap_cycles:
+            Idle cycles inserted after each transaction.
+        drain:
+            If True (default), tick until all outstanding transactions
+            complete before returning.
 
-        assert self._nbr_outstanding_reads != 0
-        self._nbr_outstanding_reads -= 1
+        Returns
+        -------
+        int
+            Total cycles elapsed (including drain).
 
-        latency = self._current_cycle - submit_cycle
+        The submission loop, backpressure waits, gap cycles and drain all
+        run in C++ with the GIL released — one Python-to-C++ crossing for
+        the whole trace.  Semantics match :meth:`replay`.
+        """
+        n = np.asarray(addrs).size
+        start = self._current_cycle
+        elapsed = self._engine.run_trace(
+            addrs,
+            writes,
+            gap_cycles=gap_cycles,
+            max_drain_cycles=10_000_000 if drain else 0,
+        )
+        self._current_cycle += elapsed
+        if self._collect:
+            self._dispatch_completions()
+        self._retry_req = False
+
+        if drain and self.num_outstanding != 0:
+            raise RuntimeError(
+                f"run_trace: {self.num_outstanding} transactions still "
+                f"outstanding after drain"
+            )
+        logger.info("run_trace completed: %d transactions in %d cycles", n, elapsed)
+        return elapsed
+
+    # -- Completion dispatch -----------------------------------------------
+
+    def _dispatch_completions(self) -> None:
+        """Drain engine completion events into the user callbacks, if any."""
         if self._user_read_cb is not None:
-            self._user_read_cb(addr, latency)
-
-    def _on_write_complete(self, addr: int) -> None:
-        q = self._outstanding_writes[addr]
-        submit_cycle = q.popleft()
-        if not q:
-            del self._outstanding_writes[addr]
-
-        assert self._nbr_outstanding_writes != 0
-        self._nbr_outstanding_writes -= 1
-
-        latency = self._current_cycle - submit_cycle
+            addrs, lats = self._engine.take_read_events()
+            for addr, lat in zip(addrs, lats):
+                self._user_read_cb(addr, lat)
         if self._user_write_cb is not None:
-            self._user_write_cb(addr, latency)
+            addrs, lats = self._engine.take_write_events()
+            for addr, lat in zip(addrs, lats):
+                self._user_write_cb(addr, lat)
+
+    # -- Callbacks (hot-swappable) -----------------------------------------
+    #
+    # Private properties: assigning a callback enables the engine's C++
+    # event collection for that direction, so late-registered callbacks
+    # still observe completions.
+
+    @property
+    def _user_read_cb(self) -> Optional[_CALLBACK]:
+        return self.__user_read_cb
+
+    @_user_read_cb.setter
+    def _user_read_cb(self, cb: Optional[_CALLBACK]) -> None:
+        self.__user_read_cb = cb
+        self._collect = cb is not None or self.__user_write_cb is not None
+        self._engine.set_collect(self._collect)
+
+    @property
+    def _user_write_cb(self) -> Optional[_CALLBACK]:
+        return self.__user_write_cb
+
+    @_user_write_cb.setter
+    def _user_write_cb(self, cb: Optional[_CALLBACK]) -> None:
+        self.__user_write_cb = cb
+        self._collect = cb is not None or self.__user_read_cb is not None
+        self._engine.set_collect(self._collect)
+
+    def set_callbacks(
+        self,
+        read_complete: Optional[_CALLBACK] = None,
+        write_complete: Optional[_CALLBACK] = None,
+    ) -> None:
+        """Replace the completion callbacks.
+
+        Assigning a callback enables C++ event collection for that direction;
+        passing ``None`` for both disables it.
+        """
+        self._user_read_cb = read_complete
+        self._user_write_cb = write_complete
 
     # -- Properties (mirror gem5 accessors) --------------------------------
 
     @property
     def num_outstanding(self) -> int:
         """Total outstanding transactions (gem5 ``nbrOutstanding()``)."""
-        return self._nbr_outstanding_reads + self._nbr_outstanding_writes
+        return self._engine.num_outstanding()
 
     @property
     def num_outstanding_reads(self) -> int:
-        return self._nbr_outstanding_reads
+        return self._engine.num_outstanding_reads()
 
     @property
     def num_outstanding_writes(self) -> int:
-        return self._nbr_outstanding_writes
+        return self._engine.num_outstanding_writes()
 
     @property
     def retry_pending(self) -> bool:
@@ -307,17 +381,17 @@ class MemoryController:
     @property
     def clock_period(self) -> float:
         """Clock period in nanoseconds."""
-        return self._wrapper.clock_period
+        return self._engine.clock_period
 
     @property
     def queue_size(self) -> int:
         """Transaction queue depth."""
-        return self._wrapper.queue_size
+        return self._queue_size
 
     @property
     def burst_size(self) -> int:
         """Burst size in bytes."""
-        return self._wrapper.burst_size
+        return self._burst_size
 
     # -- Stats (delegated) -------------------------------------------------
 
@@ -331,13 +405,13 @@ class MemoryController:
 
     def print_stats(self) -> None:
         """Flush DRAMsim3 statistics to output files."""
-        self._wrapper.print_stats()
+        self._engine.print_stats()
 
     def get_stats(self) -> dict[str, Any]:
         """Return DRAMsim3 JSON statistics as a dict."""
         import json
 
-        self._wrapper.print_stats()
+        self._engine.print_stats()
         path = self.stats_json_path
         if not path.exists():
             raise FileNotFoundError(
@@ -348,4 +422,4 @@ class MemoryController:
 
     def reset_stats(self) -> None:
         """Reset all accumulated statistics."""
-        self._wrapper.reset_stats()
+        self._engine.reset_stats()
