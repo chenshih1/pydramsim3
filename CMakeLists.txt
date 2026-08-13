@@ -15,6 +15,11 @@ if(NOT EXISTS "${DRAMSIM3_DIR}/CMakeLists.txt")
                         "Please run: git submodule update --init")
 endif()
 
+# DRAMsim3 declares cmake_minimum_required(3.0), which CMake >= 4 rejects;
+# allow old minimums so fresh toolchains (e.g. scikit-build-core's injected
+# CMake) can configure the vendored submodule.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 add_subdirectory("${DRAMSIM3_DIR}" "${DRAMSIM3_DIR}/build")
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
