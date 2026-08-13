@@ -81,10 +81,24 @@ target_include_directories(_dramsim3 PRIVATE
 
 target_link_libraries(_dramsim3 PRIVATE dramsim3)
 
+# macOS uses @loader_path, not Linux's $ORIGIN, to resolve the bundled
+# libdramsim3.dylib next to the module.
+if(APPLE)
+    set(PYDRAMSIM3_RPATH "@loader_path")
+else()
+    set(PYDRAMSIM3_RPATH "$ORIGIN")
+endif()
+
 set_target_properties(_dramsim3 PROPERTIES
-    INSTALL_RPATH "$ORIGIN"
-    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "${PYDRAMSIM3_RPATH}"
+    BUILD_RPATH "${PYDRAMSIM3_RPATH}"
 )
+
+# DRAMsim3 declares no dllexport symbols; without this MSVC produces a DLL
+# with no import library and linking _dramsim3 fails with LNK1181.
+if(WIN32)
+    set_target_properties(dramsim3 PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 add_custom_command(TARGET _dramsim3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
