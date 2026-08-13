@@ -11,6 +11,7 @@ adding gem5-style flow control, retry semantics and optional user callbacks.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -24,7 +25,45 @@ __all__ = ["MemoryController"]
 
 logger = logging.getLogger(__name__)
 
-_CALLBACK = Callable[[int, int], None]
+_CALLBACK = Callable[[int, int, int], None]
+
+
+def _adapt_callback(cb: Optional[Callable[..., None]]) -> Optional[_CALLBACK]:
+    """Return a 3-arg ``(addr, latency, tag)`` callable for dispatch.
+
+    Legacy 2-arg callbacks ``(addr, latency)`` keep working; adaptation is
+    done once at registration time, not per event.
+    """
+    if cb is None:
+        return None
+    try:
+        sig = inspect.signature(cb)
+        n_pos = len(
+            [
+                p
+                for p in sig.parameters.values()
+                if p.kind
+                in (inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+        )
+        varargs = any(
+            p.kind == inspect.Parameter.VAR_POSITIONAL
+            for p in sig.parameters.values()
+        )
+    except (TypeError, ValueError):
+        n_pos, varargs = 2, False
+    if n_pos >= 3 or varargs:
+
+        def _as_is(addr: int, latency: int, tag: int) -> None:
+            cb(addr, latency, tag)
+
+        return _as_is
+
+    def _legacy(addr: int, latency: int, tag: int) -> None:
+        cb(addr, latency)
+
+    return _legacy
 
 
 class MemoryController:
@@ -39,10 +78,12 @@ class MemoryController:
         file's parent directory.
     read_complete:
         Called as ``read_complete(addr, latency_cycles)`` when a read
-        finishes inside DRAMsim3.
+        finishes inside DRAMsim3.  If it accepts a third positional
+        argument, it is called as ``read_complete(addr, latency, tag)``
+        with the tag passed to :meth:`submit`.
     write_complete:
         Called as ``write_complete(addr, latency_cycles)`` when a write
-        finishes inside DRAMsim3.
+        finishes inside DRAMsim3 (likewise tag-aware).
     burst_size:
         If given, assert that it matches DRAMsim3's configured burst
         size (analogous to gem5 checking ``cacheLineSize``).
@@ -144,15 +185,19 @@ class MemoryController:
 
     # -- Core API (mirrors gem5 recvTimingReq / tick) ----------------------
 
-    def submit(self, addr: int, is_write: bool) -> bool:
+    def submit(self, addr: int, is_write: bool, tag: Optional[int] = None) -> bool:
         """Submit a transaction.  Returns False on backpressure.
+
+        ``tag`` is an opaque request id returned with the completion event
+        (gem5 ``PacketPtr`` analog); use it to identify which request
+        completed when multiple requests share an address.
 
         Corresponds to gem5 ``DRAMsim3::recvTimingReq``.
         """
         if self._retry_req:
             return False
 
-        if not self._engine.try_enqueue(addr, is_write):
+        if not self._engine.try_enqueue(addr, is_write, 0 if tag is None else tag):
             self._retry_req = True
             return False
         return True
@@ -303,13 +348,13 @@ class MemoryController:
     def _dispatch_completions(self) -> None:
         """Drain engine completion events into the user callbacks, if any."""
         if self._user_read_cb is not None:
-            addrs, lats = self._engine.take_read_events()
-            for addr, lat in zip(addrs, lats):
-                self._user_read_cb(addr, lat)
+            addrs, lats, tags = self._engine.take_read_events()
+            for addr, lat, tag in zip(addrs, lats, tags):
+                self._user_read_cb(addr, lat, tag)
         if self._user_write_cb is not None:
-            addrs, lats = self._engine.take_write_events()
-            for addr, lat in zip(addrs, lats):
-                self._user_write_cb(addr, lat)
+            addrs, lats, tags = self._engine.take_write_events()
+            for addr, lat, tag in zip(addrs, lats, tags):
+                self._user_write_cb(addr, lat, tag)
 
     # -- Callbacks (hot-swappable) -----------------------------------------
     #
@@ -323,7 +368,7 @@ class MemoryController:
 
     @_user_read_cb.setter
     def _user_read_cb(self, cb: Optional[_CALLBACK]) -> None:
-        self.__user_read_cb = cb
+        self.__user_read_cb = _adapt_callback(cb)
         self._collect = cb is not None or self.__user_write_cb is not None
         self._engine.set_collect(self._collect)
 
@@ -333,7 +378,7 @@ class MemoryController:
 
     @_user_write_cb.setter
     def _user_write_cb(self, cb: Optional[_CALLBACK]) -> None:
-        self.__user_write_cb = cb
+        self.__user_write_cb = _adapt_callback(cb)
         self._collect = cb is not None or self.__user_read_cb is not None
         self._engine.set_collect(self._collect)
 

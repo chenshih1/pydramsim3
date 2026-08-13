@@ -1,6 +1,7 @@
 #include "sim_engine.hpp"
 
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 SimEngine::SimEngine(const std::string& config_file,
@@ -36,12 +37,12 @@ SimEngine::SimEngine(const std::string& config_file,
   burst_size_ = static_cast<unsigned int>(bus) * static_cast<unsigned int>(burst) / 8;
 }
 
-bool SimEngine::tryEnqueue(uint64_t addr, bool is_write) {
+bool SimEngine::tryEnqueue(uint64_t addr, bool is_write, uint64_t tag) {
   std::lock_guard<std::mutex> lock(mutex_);
-  return tryEnqueueLocked(addr, is_write);
+  return tryEnqueueLocked(addr, is_write, tag);
 }
 
-bool SimEngine::tryEnqueueLocked(uint64_t addr, bool is_write) {
+bool SimEngine::tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag) {
   // Global outstanding cap (gem5 parity): DRAMsim3's acceptance check is
   // per-channel, so without this cap multi-channel traces could exceed
   // queue_size outstanding transactions.
@@ -52,10 +53,10 @@ bool SimEngine::tryEnqueueLocked(uint64_t addr, bool is_write) {
     return false;
   }
   if (is_write) {
-    outstanding_writes_[addr].push(cycle_);
+    outstanding_writes_[addr].push(std::make_pair(cycle_, tag));
     ++nbr_outstanding_writes_;
   } else {
-    outstanding_reads_[addr].push(cycle_);
+    outstanding_reads_[addr].push(std::make_pair(cycle_, tag));
     ++nbr_outstanding_reads_;
   }
   return true;
@@ -82,7 +83,7 @@ uint64_t SimEngine::runTrace(const uint64_t* addrs, const bool* writes,
   for (size_t i = 0; i < count; ++i) {
     const uint64_t addr = addrs[i];
     const bool is_write = writes[i] != 0;
-    while (!tryEnqueueLocked(addr, is_write)) {
+    while (!tryEnqueueLocked(addr, is_write, 0)) {
       // Backpressure: tick until DRAMsim3 accepts this exact transaction.
       tickOnceLocked();
     }
@@ -130,26 +131,36 @@ void SimEngine::setCollect(bool collect) {
   if (!collect) {
     read_addrs_.clear();
     read_lats_.clear();
+    read_tags_.clear();
     write_addrs_.clear();
     write_lats_.clear();
+    write_tags_.clear();
   }
 }
 
-std::pair<std::vector<uint64_t>, std::vector<uint64_t>>
+std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+           std::vector<uint64_t>>
 SimEngine::takeReadEvents() {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::pair<std::vector<uint64_t>, std::vector<uint64_t>> out;
-  out.first.swap(read_addrs_);
-  out.second.swap(read_lats_);
+  std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+             std::vector<uint64_t>>
+      out;
+  std::get<0>(out).swap(read_addrs_);
+  std::get<1>(out).swap(read_lats_);
+  std::get<2>(out).swap(read_tags_);
   return out;
 }
 
-std::pair<std::vector<uint64_t>, std::vector<uint64_t>>
+std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+           std::vector<uint64_t>>
 SimEngine::takeWriteEvents() {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::pair<std::vector<uint64_t>, std::vector<uint64_t>> out;
-  out.first.swap(write_addrs_);
-  out.second.swap(write_lats_);
+  std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+             std::vector<uint64_t>>
+      out;
+  std::get<0>(out).swap(write_addrs_);
+  std::get<1>(out).swap(write_lats_);
+  std::get<2>(out).swap(write_tags_);
   return out;
 }
 
@@ -192,35 +203,40 @@ void SimEngine::resetStats() {
 void SimEngine::onReadComplete(uint64_t addr) {
   auto it = outstanding_reads_.find(addr);
   if (it != outstanding_reads_.end()) {
-    uint64_t submit_cycle = it->second.front();
+    uint64_t submit_cycle = it->second.front().first;
+    uint64_t tag = it->second.front().second;
     it->second.pop();
     if (it->second.empty()) {
       outstanding_reads_.erase(it);
     }
     --nbr_outstanding_reads_;
-    collect(&read_addrs_, &read_lats_, addr, submit_cycle);
+    collect(&read_addrs_, &read_lats_, &read_tags_, addr, submit_cycle, tag);
   }
 }
 
 void SimEngine::onWriteComplete(uint64_t addr) {
   auto it = outstanding_writes_.find(addr);
   if (it != outstanding_writes_.end()) {
-    uint64_t submit_cycle = it->second.front();
+    uint64_t submit_cycle = it->second.front().first;
+    uint64_t tag = it->second.front().second;
     it->second.pop();
     if (it->second.empty()) {
       outstanding_writes_.erase(it);
     }
     --nbr_outstanding_writes_;
-    collect(&write_addrs_, &write_lats_, addr, submit_cycle);
+    collect(&write_addrs_, &write_lats_, &write_tags_, addr, submit_cycle,
+            tag);
   }
 }
 
 void SimEngine::collect(std::vector<uint64_t>* addrs,
-                        std::vector<uint64_t>* lats, uint64_t addr,
-                        uint64_t submit_cycle) {
+                        std::vector<uint64_t>* lats,
+                        std::vector<uint64_t>* tags, uint64_t addr,
+                        uint64_t submit_cycle, uint64_t tag) {
   if (!collect_events_) {
     return;
   }
   addrs->push_back(addr);
   lats->push_back(cycle_ - submit_cycle);
+  tags->push_back(tag);
 }

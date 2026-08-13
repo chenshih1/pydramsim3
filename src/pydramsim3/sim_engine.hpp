@@ -26,11 +26,12 @@ class SimEngine {
   SimEngine(const std::string& config_file, const std::string& working_dir,
             bool collect_events);
 
-  // Submit one transaction.  Returns false on backpressure (DRAMsim3's
-  // AddTransaction re-checks its per-channel acceptance internally and
-  // fails when the queue is full, so no separate can_accept call is
-  // needed).
-  bool tryEnqueue(uint64_t addr, bool is_write);
+  // Submit one transaction, optionally tagging it with an opaque request
+  // id that is returned with the completion event (gem5 PacketPtr analog).
+  // Returns false on backpressure (DRAMsim3's AddTransaction re-checks its
+  // per-channel acceptance internally and fails when the queue is full, so
+  // no separate can_accept call is needed).
+  bool tryEnqueue(uint64_t addr, bool is_write, uint64_t tag);
 
   // Advance *cycles* clock cycles; returns the number of cycles advanced.
   // Completion events are collected internally; retrieve them with
@@ -65,9 +66,13 @@ class SimEngine {
   void setCollect(bool collect);
 
   // Retrieve and clear the collected completion events.
-  // Returns (addrs, latencies) with latency in cycles.
-  std::pair<std::vector<uint64_t>, std::vector<uint64_t>> takeReadEvents();
-  std::pair<std::vector<uint64_t>, std::vector<uint64_t>> takeWriteEvents();
+  // Returns (addrs, latencies, tags); latency in cycles.
+  std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+             std::vector<uint64_t>>
+  takeReadEvents();
+  std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+             std::vector<uint64_t>>
+  takeWriteEvents();
 
   // Outstanding transaction counters.
   uint64_t numOutstanding() const;
@@ -89,9 +94,10 @@ class SimEngine {
   void onReadComplete(uint64_t addr);
   void onWriteComplete(uint64_t addr);
   void collect(std::vector<uint64_t>* addrs, std::vector<uint64_t>* lats,
-               uint64_t addr, uint64_t submit_cycle);
+               std::vector<uint64_t>* tags, uint64_t addr,
+               uint64_t submit_cycle, uint64_t tag);
   // Submits one transaction; assumes mutex_ is held.
-  bool tryEnqueueLocked(uint64_t addr, bool is_write);
+  bool tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
   // Advances one cycle; assumes mutex_ is held.
   void tickOnceLocked();
 
@@ -102,16 +108,18 @@ class SimEngine {
   // DRAMsim3's internal clk_ semantics.
   uint64_t cycle_ = 0;
 
-  // gem5: std::unordered_map<Addr, std::queue<Cycle>> outstanding reads/writes
-  std::unordered_map<uint64_t, std::queue<uint64_t>> outstanding_reads_;
-  std::unordered_map<uint64_t, std::queue<uint64_t>> outstanding_writes_;
+  // gem5: std::unordered_map<Addr, std::queue<(cycle, tag)>> outstanding
+  std::unordered_map<uint64_t, std::queue<std::pair<uint64_t, uint64_t>>>
+      outstanding_reads_;
+  std::unordered_map<uint64_t, std::queue<std::pair<uint64_t, uint64_t>>>
+      outstanding_writes_;
   uint64_t nbr_outstanding_reads_ = 0;
   uint64_t nbr_outstanding_writes_ = 0;
 
-  // Completion event buffers (addr, latency) for bulk export to Python.
+  // Completion event buffers (addr, latency, tag) for bulk export to Python.
   bool collect_events_ = true;
-  std::vector<uint64_t> read_addrs_, read_lats_;
-  std::vector<uint64_t> write_addrs_, write_lats_;
+  std::vector<uint64_t> read_addrs_, read_lats_, read_tags_;
+  std::vector<uint64_t> write_addrs_, write_lats_, write_tags_;
 
   double clock_period_;
   unsigned int queue_size_;

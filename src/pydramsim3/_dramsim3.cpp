@@ -13,18 +13,25 @@ namespace py = pybind11;
 using U64Array = py::array_t<uint64_t, py::array::c_style | py::array::forcecast>;
 using BoolArray = py::array_t<bool, py::array::c_style | py::array::forcecast>;
 
-// Export a (addrs, lats) event buffer as numpy arrays and clear it.
+// Export a (addrs, lats, tags) event buffer as numpy arrays and clear it.
 static py::tuple take_events_np(
-    const std::pair<std::vector<uint64_t>, std::vector<uint64_t>>& events) {
-  py::array_t<uint64_t> addrs(events.first.size());
-  py::array_t<uint64_t> lats(events.second.size());
-  if (!events.first.empty()) {
-    std::memcpy(addrs.mutable_data(), events.first.data(),
-                events.first.size() * sizeof(uint64_t));
-    std::memcpy(lats.mutable_data(), events.second.data(),
-                events.second.size() * sizeof(uint64_t));
+    const std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
+                     std::vector<uint64_t>>& events) {
+  const auto& addrs_v = std::get<0>(events);
+  const auto& lats_v = std::get<1>(events);
+  const auto& tags_v = std::get<2>(events);
+  py::array_t<uint64_t> addrs(addrs_v.size());
+  py::array_t<uint64_t> lats(lats_v.size());
+  py::array_t<uint64_t> tags(tags_v.size());
+  if (!addrs_v.empty()) {
+    std::memcpy(addrs.mutable_data(), addrs_v.data(),
+                addrs_v.size() * sizeof(uint64_t));
+    std::memcpy(lats.mutable_data(), lats_v.data(),
+                lats_v.size() * sizeof(uint64_t));
+    std::memcpy(tags.mutable_data(), tags_v.data(),
+                tags_v.size() * sizeof(uint64_t));
   }
-  return py::make_tuple(addrs, lats);
+  return py::make_tuple(addrs, lats, tags);
 }
 
 PYBIND11_MODULE(_dramsim3, m) {
@@ -40,8 +47,10 @@ PYBIND11_MODULE(_dramsim3, m) {
            py::arg("config_file"), py::arg("working_dir"),
            py::arg("collect_events") = true)
       .def("try_enqueue", &SimEngine::tryEnqueue, py::arg("addr"),
-           py::arg("is_write"),
-           "Submit one transaction; returns False on backpressure.")
+           py::arg("is_write"), py::arg("tag") = 0,
+           "Submit one transaction, optionally tagged with a request id "
+           "that is returned with its completion event; returns False on "
+           "backpressure.")
       .def(
           "tick",
           [](SimEngine& self, uint64_t cycles) -> uint64_t {
@@ -86,23 +95,23 @@ PYBIND11_MODULE(_dramsim3, m) {
       .def("set_collect", &SimEngine::setCollect, py::arg("collect"),
            "Enable/disable completion-event collection.")
       .def("take_read_events", &SimEngine::takeReadEvents,
-           "Return and clear collected (addr, latency) read completions "
-           "as Python lists.")
+           "Return and clear collected (addr, latency, tag) read "
+           "completions as Python lists.")
       .def("take_write_events", &SimEngine::takeWriteEvents,
-           "Return and clear collected (addr, latency) write completions "
-           "as Python lists.")
+           "Return and clear collected (addr, latency, tag) write "
+           "completions as Python lists.")
       .def(
           "take_read_events_np",
           [](SimEngine& self) { return take_events_np(self.takeReadEvents()); },
-          "Return and clear collected (addr, latency) read completions "
-          "as numpy arrays.")
+          "Return and clear collected (addr, latency, tag) read "
+          "completions as numpy arrays.")
       .def(
           "take_write_events_np",
           [](SimEngine& self) {
             return take_events_np(self.takeWriteEvents());
           },
-          "Return and clear collected (addr, latency) write completions "
-          "as numpy arrays.")
+          "Return and clear collected (addr, latency, tag) write "
+          "completions as numpy arrays.")
       .def("num_outstanding", &SimEngine::numOutstanding)
       .def("num_outstanding_reads", &SimEngine::numOutstandingReads)
       .def("num_outstanding_writes", &SimEngine::numOutstandingWrites)

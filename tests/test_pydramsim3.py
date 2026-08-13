@@ -72,26 +72,26 @@ class TestSimEngine:
         e = self._make(tmp_path)
         e.try_enqueue(0x1000, False)
         e.tick(500)
-        addrs, lats = e.take_read_events_np()
+        addrs, lats, tags = e.take_read_events_np()
         assert addrs.dtype == np.uint64
         assert addrs.tolist() == [0x1000]
         assert lats.tolist()[0] > 0
         # buffers cleared after take
-        addrs, _ = e.take_read_events_np()
+        addrs, _, _ = e.take_read_events_np()
         assert len(addrs) == 0
 
     def test_take_write_events_np(self, tmp_path):
         e = self._make(tmp_path)
         e.try_enqueue(0x2000, True)
         e.tick(10)
-        addrs, _ = e.take_write_events_np()
+        addrs, _, _ = e.take_write_events_np()
         assert addrs.tolist() == [0x2000]
 
     def test_try_enqueue_and_take_read_events(self, tmp_path):
         e = self._make(tmp_path)
         assert e.try_enqueue(0x1000, False)
         e.tick(500)
-        addrs, lats = e.take_read_events()
+        addrs, lats, tags = e.take_read_events()
         assert addrs == [0x1000]
         assert len(lats) == 1 and lats[0] > 0
 
@@ -99,17 +99,42 @@ class TestSimEngine:
         e = self._make(tmp_path)
         e.try_enqueue(0x1000, False)
         e.tick(500)
-        addrs, _ = e.take_read_events()
+        addrs, _, _ = e.take_read_events()
         assert len(addrs) == 1
-        addrs, _ = e.take_read_events()
+        addrs, _, _ = e.take_read_events()
         assert addrs == []
 
     def test_write_events(self, tmp_path):
         e = self._make(tmp_path)
         e.try_enqueue(0x2000, True)
         e.tick(10)
-        addrs, lats = e.take_write_events()
+        addrs, lats, tags = e.take_write_events()
         assert addrs == [0x2000]
+
+    def test_tag_roundtrip(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.try_enqueue(0x1000, False, tag=42)
+        e.tick(500)
+        addrs, lats, tags = e.take_read_events()
+        assert addrs == [0x1000]
+        assert tags == [42]
+
+    def test_tag_default_zero(self, tmp_path):
+        e = self._make(tmp_path)
+        assert e.try_enqueue(0x1000, False)
+        e.tick(500)
+        _, _, tags = e.take_read_events()
+        assert tags == [0]
+
+    def test_tags_fifo_same_address(self, tmp_path):
+        e = self._make(tmp_path)
+        e.try_enqueue(0x1000, False, tag=1)
+        e.try_enqueue(0x1000, False, tag=2)
+        e.try_enqueue(0x1000, False, tag=3)
+        e.tick(1000)
+        _, _, tags = e.take_read_events()
+        # FIFO per address: completions arrive in submission order
+        assert tags == [1, 2, 3]
 
     def test_backpressure_at_queue_size(self, tmp_path):
         e = self._make(tmp_path, collect=False)
@@ -153,7 +178,7 @@ class TestSimEngine:
         e.try_enqueue(0x1000, False)
         e.tick(500)
         e.set_collect(False)
-        addrs, _ = e.take_read_events()
+        addrs, _, _ = e.take_read_events()
         assert addrs == []
 
     def test_multiple_completions_ordered(self, tmp_path):
@@ -161,7 +186,7 @@ class TestSimEngine:
         for i in range(4):
             e.try_enqueue(0x1000, False)
         e.tick(1000)
-        addrs, lats = e.take_read_events()
+        addrs, lats, tags = e.take_read_events()
         assert len(addrs) == 4
         # FIFO per address: latencies non-decreasing
         assert lats == sorted(lats)
@@ -273,6 +298,59 @@ class TestRunTrace:
         c0 = self._mc(tmp_path).run_trace(addrs, writes)
         c1 = self._mc(tmp_path).run_trace(addrs, writes, gap_cycles=50)
         assert c1 > c0
+
+
+class TestMemoryControllerTags:
+    """Request tags (gem5 PacketPtr analog) flowing through the controller."""
+
+    @pytest.fixture
+    def mc(self, tmp_path):
+        return MemoryController.from_config(
+            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path)
+        )
+
+    def test_tagged_callback_receives_tag(self, tmp_path):
+        results = []
+        mc = MemoryController.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            read_complete=lambda addr, lat, tag: results.append((addr, lat, tag)),
+        )
+        assert mc.submit(0x1000, False, tag=7)
+        mc.run(500)
+        assert results == [(0x1000, results[0][1], 7)]
+
+    def test_same_address_distinct_tags(self, tmp_path):
+        results = []
+        mc = MemoryController.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            read_complete=lambda addr, lat, tag: results.append((addr, tag)),
+        )
+        mc.submit(0x1000, False, tag=11)
+        mc.submit(0x1000, False, tag=22)
+        mc.run(1000)
+        assert [t for _, t in results] == [11, 22]
+
+    def test_legacy_two_arg_callback_still_works(self, mc):
+        results = []
+        mc.set_callbacks(read_complete=lambda addr, lat: results.append((addr, lat)))
+        mc.submit(0x1000, False)
+        mc.run(500)
+        assert len(results) == 1
+        assert results[0][0] == 0x1000
+        assert results[0][1] > 0
+
+    def test_untagged_submit_reports_zero(self, tmp_path):
+        results = []
+        mc = MemoryController.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            write_complete=lambda addr, lat, tag: results.append((addr, tag)),
+        )
+        mc.submit(0x2000, True)
+        mc.run(10)
+        assert results == [(0x2000, 0)]
 
 
 # ---------------------------------------------------------------------------

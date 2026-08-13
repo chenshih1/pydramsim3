@@ -65,7 +65,7 @@ Key semantics matching gem5:
 - `submit()` returns `False` when `num_outstanding >= queue_size` (admission control)
 - Rejected submit sets `retry_pending`; further submits blocked until `tick()` clears it
 - Per-address FIFO tracking matches DRAMsim3 callbacks to the correct transaction
-- Callbacks receive `(addr, latency_cycles)` — latency computed from submit cycle
+- Callbacks receive `(addr, latency_cycles)` (or `(addr, latency, tag)` if tag-aware); latency computed in C++ from submit cycle
 
 ## Trace Replay & Latency Tracking
 
@@ -160,7 +160,7 @@ mc = pydramsim3.MemoryController.from_config(
 )
 ```
 
-Callbacks fire inside `tick()` and are the integration hook for outer simulators — they tell your accelerator model "this data is now available", along with the per-transaction latency. For aggregate latency *statistics*, use `LatencyTracker` or `get_stats()` (DRAMsim3's authoritative internal data).
+Callbacks fire inside `tick()` and are the integration hook for outer simulators — they tell your accelerator model "this data is now available", along with the per-transaction latency. If a callback accepts a third positional argument it is called as `(addr, latency, tag)`, where `tag` is the request id passed to `submit()` (the gem5 `PacketPtr` analog — use it to tell which request completed when several share an address). Legacy two-argument callbacks `(addr, latency)` keep working unchanged. For aggregate latency *statistics*, use `LatencyTracker` or `get_stats()` (DRAMsim3's authoritative internal data).
 
 ## Stats Collection
 
@@ -241,7 +241,7 @@ MemoryController.from_config(config_name, working_dir=None, *, read_complete=Non
 
 | Method | Description |
 |---|---|
-| `submit(addr, is_write) -> bool` | Submit transaction; False = backpressure (gem5 `recvTimingReq`) |
+| `submit(addr, is_write, tag=None) -> bool` | Submit transaction (optional request tag); False = backpressure (gem5 `recvTimingReq`) |
 | `tick()` | Advance one cycle; clears retry when space available (gem5 `tick`) |
 | `run(cycles) -> int` | Advance N cycles |
 | `drain(max_cycles=10_000_000) -> int` | Tick until all outstanding complete; returns cycles used |
