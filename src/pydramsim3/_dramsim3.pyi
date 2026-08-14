@@ -59,7 +59,7 @@ class SimEngine:
     def reset_stats(self) -> None: ...
 
     @property
-    def cycle(self) -> int:
+    def current_cycle(self) -> int:
         """Absolute simulation cycle (engine clock)."""
         ...
 

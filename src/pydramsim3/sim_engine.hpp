@@ -80,7 +80,7 @@ class SimEngine {
   uint64_t numOutstandingWrites() const;
 
   // Current cycle (absolute sim time).
-  uint64_t cycle() const;
+  uint64_t currentCycle() const;
 
   // Cached configuration invariants.
   double clockPeriod() const;
@@ -113,8 +113,8 @@ class SimEngine {
       outstanding_reads_;
   std::unordered_map<uint64_t, std::queue<std::pair<uint64_t, uint64_t>>>
       outstanding_writes_;
-  uint64_t nbr_outstanding_reads_ = 0;
-  uint64_t nbr_outstanding_writes_ = 0;
+  uint64_t num_outstanding_reads_ = 0;
+  uint64_t num_outstanding_writes_ = 0;
 
   // Completion event buffers (addr, latency, tag) for bulk export to Python.
   bool collect_events_ = true;

@@ -55,14 +55,14 @@ class TestSimEngine:
         assert e.clock_period > 0
         assert e.queue_size == 32
         assert e.burst_size == 64
-        assert e.cycle == 0
+        assert e.current_cycle == 0
 
     def test_tick_returns_cycles_and_advances_clock(self, tmp_path):
         e = self._make(tmp_path)
         assert e.tick(100) == 100
-        assert e.cycle == 100
+        assert e.current_cycle == 100
         e.tick()
-        assert e.cycle == 101
+        assert e.current_cycle == 101
 
     def test_drain_returns_cycles_used(self, tmp_path):
         e = self._make(tmp_path)
@@ -269,7 +269,7 @@ class TestRunTrace:
     def test_drain_false(self, tmp_path):
         mc = self._mc(tmp_path)
         addrs, writes = self._make_trace(16, write_odd=False)
-        mc.run_trace(addrs, writes, drain=False)
+        mc.run_trace(addrs, writes, max_drain_cycles=0)
         assert mc.num_outstanding > 0
         mc.drain()
         assert mc.num_outstanding == 0

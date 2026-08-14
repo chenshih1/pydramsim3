@@ -46,7 +46,7 @@ bool SimEngine::tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag) {
   // Global outstanding cap (gem5 parity): DRAMsim3's acceptance check is
   // per-channel, so without this cap multi-channel traces could exceed
   // queue_size outstanding transactions.
-  if (nbr_outstanding_reads_ + nbr_outstanding_writes_ >= queue_size_) {
+  if (num_outstanding_reads_ + num_outstanding_writes_ >= queue_size_) {
     return false;
   }
   if (!dramsim_->AddTransaction(addr, is_write)) {
@@ -54,10 +54,10 @@ bool SimEngine::tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag) {
   }
   if (is_write) {
     outstanding_writes_[addr].push(std::make_pair(cycle_, tag));
-    ++nbr_outstanding_writes_;
+    ++num_outstanding_writes_;
   } else {
     outstanding_reads_[addr].push(std::make_pair(cycle_, tag));
-    ++nbr_outstanding_reads_;
+    ++num_outstanding_reads_;
   }
   return true;
 }
@@ -93,7 +93,7 @@ uint64_t SimEngine::runTrace(const uint64_t* addrs, const bool* writes,
   }
   uint64_t n = 0;
   while (n < max_drain_cycles &&
-         (nbr_outstanding_reads_ + nbr_outstanding_writes_) > 0) {
+         (num_outstanding_reads_ + num_outstanding_writes_) > 0) {
     tickOnceLocked();
     ++n;
   }
@@ -105,7 +105,7 @@ uint64_t SimEngine::tickUntilCapacity(uint64_t addr, bool is_write,
   std::lock_guard<std::mutex> lock(mutex_);
   uint64_t n = 0;
   while (n < max_cycles &&
-         ((nbr_outstanding_reads_ + nbr_outstanding_writes_) >= queue_size_ ||
+         ((num_outstanding_reads_ + num_outstanding_writes_) >= queue_size_ ||
           !dramsim_->WillAcceptTransaction(addr, is_write))) {
     dramsim_->ClockTick();
     ++cycle_;
@@ -118,7 +118,7 @@ uint64_t SimEngine::drain(uint64_t max_cycles) {
   std::lock_guard<std::mutex> lock(mutex_);
   uint64_t n = 0;
   while (n < max_cycles &&
-         (nbr_outstanding_reads_ + nbr_outstanding_writes_) > 0) {
+         (num_outstanding_reads_ + num_outstanding_writes_) > 0) {
     tickOnceLocked();
     ++n;
   }
@@ -166,20 +166,20 @@ SimEngine::takeWriteEvents() {
 
 uint64_t SimEngine::numOutstanding() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return nbr_outstanding_reads_ + nbr_outstanding_writes_;
+  return num_outstanding_reads_ + num_outstanding_writes_;
 }
 
 uint64_t SimEngine::numOutstandingReads() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return nbr_outstanding_reads_;
+  return num_outstanding_reads_;
 }
 
 uint64_t SimEngine::numOutstandingWrites() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return nbr_outstanding_writes_;
+  return num_outstanding_writes_;
 }
 
-uint64_t SimEngine::cycle() const {
+uint64_t SimEngine::currentCycle() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return cycle_;
 }
@@ -209,7 +209,7 @@ void SimEngine::onReadComplete(uint64_t addr) {
     if (it->second.empty()) {
       outstanding_reads_.erase(it);
     }
-    --nbr_outstanding_reads_;
+    --num_outstanding_reads_;
     collect(&read_addrs_, &read_lats_, &read_tags_, addr, submit_cycle, tag);
   }
 }
@@ -223,7 +223,7 @@ void SimEngine::onWriteComplete(uint64_t addr) {
     if (it->second.empty()) {
       outstanding_writes_.erase(it);
     }
-    --nbr_outstanding_writes_;
+    --num_outstanding_writes_;
     collect(&write_addrs_, &write_lats_, &write_tags_, addr, submit_cycle,
             tag);
   }

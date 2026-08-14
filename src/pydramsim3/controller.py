@@ -297,7 +297,7 @@ class MemoryController:
         writes: npt.NDArray[np.bool_],
         *,
         gap_cycles: int = 0,
-        drain: bool = True,
+        max_drain_cycles: Optional[int] = None,
     ) -> int:
         """Drive a trace stored in numpy arrays, entirely inside C++.
 
@@ -309,9 +309,11 @@ class MemoryController:
             Numpy array of bools, same length as ``addrs``.
         gap_cycles:
             Idle cycles inserted after each transaction.
-        drain:
-            If True (default), tick until all outstanding transactions
-            complete before returning.
+        max_drain_cycles:
+            Tick at most this many cycles at the end until all outstanding
+            transactions complete.  ``None`` (default) uses 10 million;
+            ``0`` skips the final drain (outstanding transactions remain
+            in flight for a later :meth:`drain`).
 
         Returns
         -------
@@ -323,19 +325,20 @@ class MemoryController:
         the whole trace.  Semantics match :meth:`replay`.
         """
         n = np.asarray(addrs).size
+        max_drain = 10_000_000 if max_drain_cycles is None else max_drain_cycles
         start = self._current_cycle
         elapsed = self._engine.run_trace(
             addrs,
             writes,
             gap_cycles=gap_cycles,
-            max_drain_cycles=10_000_000 if drain else 0,
+            max_drain_cycles=max_drain,
         )
         self._current_cycle += elapsed
         if self._collect:
             self._dispatch_completions()
         self._retry_req = False
 
-        if drain and self.num_outstanding != 0:
+        if max_drain != 0 and self.num_outstanding != 0:
             raise RuntimeError(
                 f"run_trace: {self.num_outstanding} transactions still "
                 f"outstanding after drain"

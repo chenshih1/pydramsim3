@@ -93,7 +93,7 @@ print(tracker.summary())
 
 **`replay(trace, gap_cycles=0)`** — drives a `(addr, is_write)` sequence with automatic backpressure handling and a final `drain()`. Accepts any iterable (list, generator, file parser). `gap_cycles` inserts idle cycles between transactions.
 
-**`run_trace(addrs, writes, gap_cycles=0, drain=True)`** — the high-throughput variant for numpy users: `addrs` (uint64) and `writes` (bool) numpy arrays drive the *entire* loop in C++ (submission, backpressure waits, gap cycles, drain) with the GIL released — a single Python-to-C++ crossing per trace. Zero-copy when the arrays are C-contiguous with the right dtypes; identical semantics (and cycle counts) to `replay()`:
+**`run_trace(addrs, writes, gap_cycles=0, max_drain_cycles=None)`** — the high-throughput variant for numpy users: `addrs` (uint64) and `writes` (bool) numpy arrays drive the *entire* loop in C++ (submission, backpressure waits, gap cycles, drain) with the GIL released — a single Python-to-C++ crossing per trace. Zero-copy when the arrays are C-contiguous with the right dtypes; identical semantics (and cycle counts) to `replay()`:
 
 ```python
 import numpy as np
@@ -206,7 +206,7 @@ Completion events are exported in bulk — as Python lists
 instead of per-event Python callbacks.  `tick(n)`/`drain()`/
 `tick_until_capacity()`/`run_trace()` release the GIL while DRAMsim3 runs;
 every time-advancing method returns the number of cycles advanced, and
-`cycle` exposes the absolute simulation clock.  Not part of the public API —
+`current_cycle` exposes the absolute simulation clock.  Not part of the public API —
 use `MemoryController` unless you need raw engine control.
 
 ### `MemoryController`

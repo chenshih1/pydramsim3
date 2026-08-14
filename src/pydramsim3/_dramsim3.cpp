@@ -115,7 +115,7 @@ PYBIND11_MODULE(_dramsim3, m) {
       .def("num_outstanding", &SimEngine::numOutstanding)
       .def("num_outstanding_reads", &SimEngine::numOutstandingReads)
       .def("num_outstanding_writes", &SimEngine::numOutstandingWrites)
-      .def_property_readonly("cycle", &SimEngine::cycle,
+      .def_property_readonly("current_cycle", &SimEngine::currentCycle,
                              "Absolute simulation cycle (engine clock).")
       .def("print_stats", &SimEngine::printStats)
       .def("reset_stats", &SimEngine::resetStats)
