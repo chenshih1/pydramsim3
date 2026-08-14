@@ -4,6 +4,15 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      build:
+        description: "cibuildwheel build selection (e.g. cp313-*); empty = all"
+        required: false
+        default: ""
+      archs:
+        description: "Linux archs override (e.g. x86_64); empty = x86_64 aarch64"
+        required: false
+        default: ""
 
 jobs:
   build-wheels:
@@ -15,14 +24,15 @@ jobs:
         platform: [ubuntu-latest, macos-latest, windows-latest]
         include:
           - platform: ubuntu-latest
-            # x86_64 native + aarch64 via qemu
-            CIBW_ARCHS: "x86_64 aarch64"
+            # x86_64 native + aarch64 via qemu (override via workflow_dispatch)
+            CIBW_ARCHS: ${{ inputs.archs != '' && inputs.archs || 'x86_64 aarch64' }}
           - platform: macos-latest
             CIBW_ARCHS: "x86_64 arm64"
           - platform: windows-latest
             CIBW_ARCHS: "AMD64"
     env:
       CIBW_ARCHS: ${{ matrix.CIBW_ARCHS }}
+      CIBW_BUILD: ${{ inputs.build }}
       # setup-python exports Python_ROOT_DIR pointing at the HOST python;
       # cibuildwheel leaks it into the manylinux container where the path
       # does not exist, breaking FindPython.  Empty values fall back to
