@@ -35,12 +35,11 @@ snake_case and the C++ names camelCase, one-to-one.
 A pre-commit config is provided; install it once with
 `pip install pre-commit && pre-commit install`.
 
-A pre-push hook runs lint + tests before every push:
+## Branch protection
 
-```bash
-scripts/pre-push.sh install   # once, installs .git/hooks/pre-push
-git push --no-verify          # emergency bypass
-```
+`master` is protected on GitHub: changes must go through pull requests and
+all CI checks must pass before merging.  Direct pushes to `master` are
+blocked; use a feature branch and open a PR.
 
 ## Benchmarks
 
