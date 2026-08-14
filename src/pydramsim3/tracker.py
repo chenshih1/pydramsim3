@@ -1,9 +1,6 @@
-# -*- coding: utf-8 -*-
 """Latency collection and percentile reporting for MemoryController."""
 
 from __future__ import annotations
-
-from typing import Optional
 
 __all__ = ["LatencyTracker"]
 
@@ -15,7 +12,7 @@ class LatencyStats:
     precomputed so repeated property access is O(1).
     """
 
-    __slots__ = ("_data", "_count", "_sum")
+    __slots__ = ("_count", "_data", "_sum")
 
     def __init__(self, data: list[int]) -> None:
         self._data = sorted(data)
@@ -68,7 +65,7 @@ class LatencyStats:
         return self._percentile(0.99)
 
     def percentile(self, pct: float) -> int:
-        """Arbitrary percentile (0.0–1.0)."""
+        """Arbitrary percentile (0.0-1.0)."""
         return self._percentile(pct)
 
     def _percentile(self, pct: float) -> int:
@@ -106,9 +103,9 @@ class LatencyTracker:
     def __init__(self) -> None:
         self._read_latencies: list[int] = []
         self._write_latencies: list[int] = []
-        self._read_stats: Optional[LatencyStats] = None
-        self._write_stats: Optional[LatencyStats] = None
-        self._all_stats: Optional[LatencyStats] = None
+        self._read_stats: LatencyStats | None = None
+        self._write_stats: LatencyStats | None = None
+        self._all_stats: LatencyStats | None = None
 
     def on_read(self, addr: int, latency: int) -> None:
         """Callback for ``MemoryController(read_complete=...)``."""

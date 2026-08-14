@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as follows."
+title: "PyDRAMsim3 — Python bindings for the DRAMsim3 memory simulator"
+abstract: >-
+  A high-performance Python binding for DRAMsim3 (cycle-accurate DRAM
+  modeling) with a gem5-aligned MemoryController, a C++ SimEngine hot loop
+  with bulk event export, and zero-copy numpy trace driving.  Designed for
+  CPU/GPU/accelerator architecture simulation.
+authors:
+  - family-names: Chen
+    given-names: Shi
+    email: chenshi8603@163.com
+version: "0.1.0"
+date-released: "2026-08-14"
+license: MIT
+keywords:
+  - DRAM
+  - memory-simulation
+  - computer-architecture
+  - gem5
+  - hardware-simulation
+repository-code: "https://github.com/chenshih1/pydramsim3"

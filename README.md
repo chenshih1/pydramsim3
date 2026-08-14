@@ -1,5 +1,9 @@
 # PyDRAMsim3
 
+[![CI](https://img.shields.io/github/actions/workflow/status/chenshih1/pydramsim3/ci.yml?branch=master&label=CI)](https://github.com/chenshih1/pydramsim3/actions)
+[![Python](https://img.shields.io/pypi/pyversions/pydramsim3)](https://pypi.org/project/pydramsim3/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Python bindings for [DRAMsim3](https://github.com/umd-memsys/DRAMsim3), a cycle-accurate DRAM simulator. Designed for hardware architecture research — integrate DRAM timing models into CPU, GPU, or custom accelerator simulators.
 
 ## Installation
@@ -8,7 +12,7 @@ Python bindings for [DRAMsim3](https://github.com/umd-memsys/DRAMsim3), a cycle-
 pip install -e .
 ```
 
-Requires Python >= 3.8, pybind11 >= 2.6 (auto-resolved by the build system).
+Requires Python >= 3.8, pybind11 >= 2.11 (auto-resolved by the build system).
 
 ## Quick Start
 

@@ -1,9 +1,6 @@
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-import pydramsim3
 from pydramsim3 import (
     LatencyStats,
     LatencyTracker,
@@ -13,10 +10,10 @@ from pydramsim3 import (
 )
 from pydramsim3._dramsim3 import SimEngine
 
-
 # ---------------------------------------------------------------------------
 # Config discovery
 # ---------------------------------------------------------------------------
+
 
 class TestConfigDiscovery:
     def test_configs_dir_exists(self):
@@ -41,6 +38,7 @@ class TestConfigDiscovery:
 # ---------------------------------------------------------------------------
 # SimEngine — high-performance C++ hot loop
 # ---------------------------------------------------------------------------
+
 
 class TestSimEngine:
     """Tests the C++ SimEngine (bulk events, batching, backpressure waits)."""
@@ -72,7 +70,7 @@ class TestSimEngine:
         e = self._make(tmp_path)
         e.try_enqueue(0x1000, False)
         e.tick(500)
-        addrs, lats, tags = e.take_read_events_np()
+        addrs, lats, _tags = e.take_read_events_np()
         assert addrs.dtype == np.uint64
         assert addrs.tolist() == [0x1000]
         assert lats.tolist()[0] > 0
@@ -91,7 +89,7 @@ class TestSimEngine:
         e = self._make(tmp_path)
         assert e.try_enqueue(0x1000, False)
         e.tick(500)
-        addrs, lats, tags = e.take_read_events()
+        addrs, lats, _tags = e.take_read_events()
         assert addrs == [0x1000]
         assert len(lats) == 1 and lats[0] > 0
 
@@ -108,14 +106,14 @@ class TestSimEngine:
         e = self._make(tmp_path)
         e.try_enqueue(0x2000, True)
         e.tick(10)
-        addrs, lats, tags = e.take_write_events()
+        addrs, _lats, _tags = e.take_write_events()
         assert addrs == [0x2000]
 
     def test_tag_roundtrip(self, tmp_path):
         e = self._make(tmp_path)
         assert e.try_enqueue(0x1000, False, tag=42)
         e.tick(500)
-        addrs, lats, tags = e.take_read_events()
+        addrs, _lats, tags = e.take_read_events()
         assert addrs == [0x1000]
         assert tags == [42]
 
@@ -183,10 +181,10 @@ class TestSimEngine:
 
     def test_multiple_completions_ordered(self, tmp_path):
         e = self._make(tmp_path)
-        for i in range(4):
+        for _i in range(4):
             e.try_enqueue(0x1000, False)
         e.tick(1000)
-        addrs, lats, tags = e.take_read_events()
+        addrs, lats, _tags = e.take_read_events()
         assert len(addrs) == 4
         # FIFO per address: latencies non-decreasing
         assert lats == sorted(lats)
@@ -204,9 +202,7 @@ class TestSimEngine:
 
     def test_sustained_mixed_replay_no_deadlock(self, tmp_path):
         """Regression: sustained mixed traffic used to busy-spin in Python."""
-        mc = MemoryController.from_config(
-            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path)
-        )
+        mc = MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
         trace = [(0x1000 + i * 64, i % 2 == 1) for i in range(500)]
         cycles = mc.replay(trace)
         assert cycles > 0
@@ -216,6 +212,7 @@ class TestSimEngine:
 # ---------------------------------------------------------------------------
 # run_trace — numpy bulk driver
 # ---------------------------------------------------------------------------
+
 
 class TestRunTrace:
     """Tests the numpy zero-copy trace driver (C++ hot loop)."""
@@ -228,15 +225,11 @@ class TestRunTrace:
 
     @staticmethod
     def _mc(tmp_path, **kw):
-        return MemoryController.from_config(
-            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path), **kw
-        )
+        return MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), **kw)
 
     def test_matches_replay_cycles(self, tmp_path):
         addrs, writes = self._make_trace(256)
-        c1 = self._mc(tmp_path).replay(
-            [(int(a), bool(w)) for a, w in zip(addrs, writes)]
-        )
+        c1 = self._mc(tmp_path).replay([(int(a), bool(w)) for a, w in zip(addrs, writes)])
         c2 = self._mc(tmp_path).run_trace(addrs, writes)
         assert c1 == c2
 
@@ -251,8 +244,8 @@ class TestRunTrace:
         reads, writes = [], []
         mc = self._mc(
             tmp_path,
-            read_complete=lambda a, l: reads.append(a),
-            write_complete=lambda a, l: writes.append(a),
+            read_complete=lambda a, lat: reads.append(a),
+            write_complete=lambda a, lat: writes.append(a),
         )
         addrs, wflags = self._make_trace(64)
         mc.run_trace(addrs, wflags)
@@ -305,9 +298,7 @@ class TestMemoryControllerTags:
 
     @pytest.fixture
     def mc(self, tmp_path):
-        return MemoryController.from_config(
-            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path)
-        )
+        return MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
 
     def test_tagged_callback_receives_tag(self, tmp_path):
         results = []
@@ -357,12 +348,16 @@ class TestMemoryControllerTags:
 # Different configs
 # ---------------------------------------------------------------------------
 
+
 class TestDifferentConfigs:
-    @pytest.mark.parametrize("config_name", [
-        "DDR3_4Gb_x8_1600",
-        "HBM2_8Gb_x128",
-        "LPDDR4_8Gb_x16_2400",
-    ])
+    @pytest.mark.parametrize(
+        "config_name",
+        [
+            "DDR3_4Gb_x8_1600",
+            "HBM2_8Gb_x128",
+            "LPDDR4_8Gb_x16_2400",
+        ],
+    )
     def test_config_loads(self, config_name, tmp_path):
         mc = MemoryController.from_config(config_name, working_dir=str(tmp_path))
         assert mc.clock_period > 0
@@ -373,6 +368,7 @@ class TestDifferentConfigs:
 # ---------------------------------------------------------------------------
 # MemoryController — gem5-aligned flow control
 # ---------------------------------------------------------------------------
+
 
 class TestMemoryControllerConstruction:
     def test_from_config(self, tmp_path):
@@ -563,8 +559,8 @@ class TestMemoryControllerSimulation:
         mc = MemoryController.from_config(
             "DDR4_8Gb_x8_2400",
             working_dir=str(tmp_path),
-            read_complete=lambda a, l: reads.append(a),
-            write_complete=lambda a, l: writes.append(a),
+            read_complete=lambda a, lat: reads.append(a),
+            write_complete=lambda a, lat: writes.append(a),
         )
         for i in range(8):
             mc.submit(0x1000 + i * 64, False)
@@ -578,14 +574,17 @@ class TestMemoryControllerSimulation:
         mc = MemoryController.from_config(
             "DDR4_8Gb_x8_2400",
             working_dir=str(tmp_path),
-            read_complete=lambda a, l: completed.append(a),
+            read_complete=lambda a, lat: completed.append(a),
         )
         submitted = 0
         target = 100
-        for cycle in range(5000):
-            if submitted < target and not mc.retry_pending:
-                if mc.submit(0x1000 + submitted * 64, False):
-                    submitted += 1
+        for _cycle in range(5000):
+            if (
+                submitted < target
+                and not mc.retry_pending
+                and mc.submit(0x1000 + submitted * 64, False)
+            ):
+                submitted += 1
             mc.tick()
             if submitted == target and mc.num_outstanding == 0:
                 break
@@ -633,6 +632,7 @@ class TestMemoryControllerContextManager:
 # MemoryController — drain / replay helpers
 # ---------------------------------------------------------------------------
 
+
 class TestDrain:
     @pytest.fixture
     def mc(self, tmp_path):
@@ -662,7 +662,7 @@ class TestReplay:
         mc = MemoryController.from_config(
             "DDR4_8Gb_x8_2400",
             working_dir=str(tmp_path),
-            read_complete=lambda a, l: results.append((a, l)),
+            read_complete=lambda a, lat: results.append((a, lat)),
         )
         trace = [(0x1000 + i * 64, False) for i in range(32)]
         total_cycles = mc.replay(trace)
@@ -676,8 +676,8 @@ class TestReplay:
         mc = MemoryController.from_config(
             "DDR4_8Gb_x8_2400",
             working_dir=str(tmp_path),
-            read_complete=lambda a, l: reads.append(a),
-            write_complete=lambda a, l: writes.append(a),
+            read_complete=lambda a, lat: reads.append(a),
+            write_complete=lambda a, lat: writes.append(a),
         )
         trace = [(0x1000 + i * 64, i % 2 == 1) for i in range(20)]
         mc.replay(trace)
@@ -698,7 +698,7 @@ class TestReplay:
         mc = MemoryController.from_config(
             "DDR4_8Gb_x8_2400",
             working_dir=str(tmp_path),
-            read_complete=lambda a, l: results.append(a),
+            read_complete=lambda a, lat: results.append(a),
         )
         trace = [(0x1000 + i * 64, False) for i in range(100)]
         mc.replay(trace)
@@ -733,6 +733,7 @@ class TestReplay:
 # ---------------------------------------------------------------------------
 # LatencyTracker
 # ---------------------------------------------------------------------------
+
 
 class TestLatencyTracker:
     def test_basic_collection(self, tmp_path):

@@ -13,3 +13,5 @@ dramsim3.txt
 dist/
 .qoder/
 .venv/
+.coverage
+htmlcov/

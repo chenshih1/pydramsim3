@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """gem5-aligned memory controller wrapping DRAMsim3.
 
 Mirrors the flow-control and outstanding-tracking semantics of
@@ -14,7 +13,7 @@ from __future__ import annotations
 import inspect
 import logging
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -28,7 +27,7 @@ logger = logging.getLogger(__name__)
 _CALLBACK = Callable[[int, int, int], None]
 
 
-def _adapt_callback(cb: Optional[Callable[..., None]]) -> Optional[_CALLBACK]:
+def _adapt_callback(cb: Callable[..., None] | None) -> _CALLBACK | None:
     """Return a 3-arg ``(addr, latency, tag)`` callable for dispatch.
 
     Legacy 2-arg callbacks ``(addr, latency)`` keep working; adaptation is
@@ -43,14 +42,10 @@ def _adapt_callback(cb: Optional[Callable[..., None]]) -> Optional[_CALLBACK]:
                 p
                 for p in sig.parameters.values()
                 if p.kind
-                in (inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
             ]
         )
-        varargs = any(
-            p.kind == inspect.Parameter.VAR_POSITIONAL
-            for p in sig.parameters.values()
-        )
+        varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
     except (TypeError, ValueError):
         n_pos, varargs = 2, False
     if n_pos >= 3 or varargs:
@@ -92,11 +87,11 @@ class MemoryController:
     def __init__(
         self,
         config_file: str,
-        working_dir: Optional[str] = None,
+        working_dir: str | None = None,
         *,
-        read_complete: Optional[_CALLBACK] = None,
-        write_complete: Optional[_CALLBACK] = None,
-        burst_size: Optional[int] = None,
+        read_complete: _CALLBACK | None = None,
+        write_complete: _CALLBACK | None = None,
+        burst_size: int | None = None,
     ) -> None:
         if working_dir is None:
             working_dir = str(Path(config_file).parent)
@@ -104,8 +99,8 @@ class MemoryController:
         self._config_file = Path(config_file)
 
         # Callback backing fields (private properties below).
-        self.__user_read_cb: Optional[_CALLBACK] = None
-        self.__user_write_cb: Optional[_CALLBACK] = None
+        self.__user_read_cb: _CALLBACK | None = None
+        self.__user_write_cb: _CALLBACK | None = None
         self._collect: bool = (read_complete is not None) or (write_complete is not None)
 
         self._engine = SimEngine(
@@ -140,11 +135,11 @@ class MemoryController:
     def from_config(
         cls,
         config_name: str,
-        working_dir: Optional[str] = None,
+        working_dir: str | None = None,
         *,
-        read_complete: Optional[_CALLBACK] = None,
-        write_complete: Optional[_CALLBACK] = None,
-        burst_size: Optional[int] = None,
+        read_complete: _CALLBACK | None = None,
+        write_complete: _CALLBACK | None = None,
+        burst_size: int | None = None,
     ) -> MemoryController:
         """Create from a bundled config name (e.g. ``"DDR4_8Gb_x8_2400"``)."""
         from . import configs_dir, list_configs
@@ -185,7 +180,7 @@ class MemoryController:
 
     # -- Core API (mirrors gem5 recvTimingReq / tick) ----------------------
 
-    def submit(self, addr: int, is_write: bool, tag: Optional[int] = None) -> bool:
+    def submit(self, addr: int, is_write: bool, tag: int | None = None) -> bool:
         """Submit a transaction.  Returns False on backpressure.
 
         ``tag`` is an opaque request id returned with the completion event
@@ -247,7 +242,7 @@ class MemoryController:
 
     def replay(
         self,
-        trace: Iterable[tuple[int, bool, Optional[int]]],
+        trace: Iterable[tuple[int, bool, int | None]],
         *,
         gap_cycles: int = 0,
     ) -> int:
@@ -306,7 +301,7 @@ class MemoryController:
         writes: npt.NDArray[np.bool_],
         *,
         gap_cycles: int = 0,
-        max_drain_cycles: Optional[int] = None,
+        max_drain_cycles: int | None = None,
     ) -> int:
         """Drive a trace stored in numpy arrays, entirely inside C++.
 
@@ -335,7 +330,6 @@ class MemoryController:
         """
         n = np.asarray(addrs).size
         max_drain = 10_000_000 if max_drain_cycles is None else max_drain_cycles
-        start = self._current_cycle
         elapsed = self._engine.run_trace(
             addrs,
             writes,
@@ -349,8 +343,7 @@ class MemoryController:
 
         if max_drain != 0 and self.num_outstanding != 0:
             raise RuntimeError(
-                f"run_trace: {self.num_outstanding} transactions still "
-                f"outstanding after drain"
+                f"run_trace: {self.num_outstanding} transactions still outstanding after drain"
             )
         logger.info("run_trace completed: %d transactions in %d cycles", n, elapsed)
         return elapsed
@@ -375,29 +368,29 @@ class MemoryController:
     # still observe completions.
 
     @property
-    def _user_read_cb(self) -> Optional[_CALLBACK]:
+    def _user_read_cb(self) -> _CALLBACK | None:
         return self.__user_read_cb
 
     @_user_read_cb.setter
-    def _user_read_cb(self, cb: Optional[_CALLBACK]) -> None:
+    def _user_read_cb(self, cb: _CALLBACK | None) -> None:
         self.__user_read_cb = _adapt_callback(cb)
         self._collect = cb is not None or self.__user_write_cb is not None
         self._engine.set_collect(self._collect)
 
     @property
-    def _user_write_cb(self) -> Optional[_CALLBACK]:
+    def _user_write_cb(self) -> _CALLBACK | None:
         return self.__user_write_cb
 
     @_user_write_cb.setter
-    def _user_write_cb(self, cb: Optional[_CALLBACK]) -> None:
+    def _user_write_cb(self, cb: _CALLBACK | None) -> None:
         self.__user_write_cb = _adapt_callback(cb)
         self._collect = cb is not None or self.__user_read_cb is not None
         self._engine.set_collect(self._collect)
 
     def set_callbacks(
         self,
-        read_complete: Optional[_CALLBACK] = None,
-        write_complete: Optional[_CALLBACK] = None,
+        read_complete: _CALLBACK | None = None,
+        write_complete: _CALLBACK | None = None,
     ) -> None:
         """Replace the completion callbacks.
 

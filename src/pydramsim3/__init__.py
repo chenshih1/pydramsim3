@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PyDRAMsim3 — Python bindings for the DRAMsim3 cycle-accurate memory simulator.
 
 The public entry point is :class:`MemoryController`, a gem5-aligned DRAM
@@ -29,6 +28,7 @@ __version__ = "0.1.0"
 # ---------------------------------------------------------------------------
 # Config discovery
 # ---------------------------------------------------------------------------
+
 
 def configs_dir() -> Path:
     """Return the path to the bundled DRAMsim3 config directory.

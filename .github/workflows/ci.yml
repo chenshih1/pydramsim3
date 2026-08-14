@@ -23,8 +23,23 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install package (builds the C++ extension via scikit-build-core)
         run: pip install ".[test]"
-      - name: Run tests
-        run: pytest -q
+      - name: Run tests with coverage
+        run: pytest -q --cov=pydramsim3 --cov-report=term-missing --cov-fail-under=70
+
+  lint:
+    name: Lint and format (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint
+        run: ruff check src/ tests/ examples/
+      - name: Format check
+        run: ruff format --check src/ tests/ examples/
 
   package:
     name: Build sdist + wheel

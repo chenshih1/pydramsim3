@@ -12,23 +12,28 @@ partial results.  It demonstrates:
   - Using ``get_stats()`` for authoritative DRAMsim3 internal stats
 """
 
+from __future__ import annotations
+
 import logging
 import tempfile
 
 import pydramsim3
+
+logger = logging.getLogger("accelerator_sim")
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 DRAM_CONFIG = "DDR4_8Gb_x8_2400"
-TILE_SIZE = 256          # bytes per tile
-NUM_TILES = 128          # number of tiles to load
+TILE_SIZE = 256  # bytes per tile
+NUM_TILES = 128  # number of tiles to load
 BASE_ADDR = 0x1000_0000  # start address of the weight matrix in DRAM
 
 # ---------------------------------------------------------------------------
 # Simulation
 # ---------------------------------------------------------------------------
+
 
 def build_trace(burst_size: int) -> list[tuple[int, bool]]:
     """Build the memory trace: tile reads followed by result writes."""
@@ -51,47 +56,65 @@ def build_trace(burst_size: int) -> list[tuple[int, bool]]:
 def report_dramsim3_stats(stats: dict) -> None:
     """Print DRAMsim3 internal stats."""
     ch0 = stats["0"]
-    logging.info("DRAMsim3: reads=%d writes=%d avg_read_lat=%.1f energy=%.0f pJ",
-                 ch0["num_reads_done"], ch0["num_writes_done"],
-                 ch0["average_read_latency"], ch0["total_energy"])
+    logger.info(
+        "DRAMsim3: reads=%d writes=%d avg_read_lat=%.1f energy=%.0f pJ",
+        ch0["num_reads_done"],
+        ch0["num_writes_done"],
+        ch0["average_read_latency"],
+        ch0["total_energy"],
+    )
     reads = ch0["num_reads_done"]
     if reads:
-        logging.info("DRAMsim3: read row hits %d/%d (%.1f%%)",
-                     ch0["num_read_row_hits"], reads,
-                     100 * ch0["num_read_row_hits"] / reads)
+        logger.info(
+            "DRAMsim3: read row hits %d/%d (%.1f%%)",
+            ch0["num_read_row_hits"],
+            reads,
+            100 * ch0["num_read_row_hits"] / reads,
+        )
 
 
 def run_simulation() -> None:
-    logging.info("Config: %s, tiles: %d, tile size: %d B", DRAM_CONFIG, NUM_TILES, TILE_SIZE)
+    logger.info("Config: %s, tiles: %d, tile size: %d B", DRAM_CONFIG, NUM_TILES, TILE_SIZE)
 
     tracker = pydramsim3.LatencyTracker()
 
-    with tempfile.TemporaryDirectory(prefix="dramsim3_") as output_dir, \
-         pydramsim3.MemoryController.from_config(
-             DRAM_CONFIG,
-             working_dir=output_dir,
-             read_complete=tracker.on_read,
-             write_complete=tracker.on_write,
-         ) as mc:
-
-        logging.info("Clock: %.2f ns, queue: %d, burst: %d B",
-                     mc.clock_period, mc.queue_size, mc.burst_size)
+    with tempfile.TemporaryDirectory(
+        prefix="dramsim3_"
+    ) as output_dir, pydramsim3.MemoryController.from_config(
+        DRAM_CONFIG,
+        working_dir=output_dir,
+        read_complete=tracker.on_read,
+        write_complete=tracker.on_write,
+    ) as mc:
+        logger.info(
+            "Clock: %.2f ns, queue: %d, burst: %d B", mc.clock_period, mc.queue_size, mc.burst_size
+        )
 
         trace = build_trace(mc.burst_size)
-        logging.info("Trace: %d transactions (%d reads + %d writes)",
-                     len(trace), NUM_TILES * (TILE_SIZE // mc.burst_size),
-                     NUM_TILES * (TILE_SIZE // mc.burst_size))
+        logger.info(
+            "Trace: %d transactions (%d reads + %d writes)",
+            len(trace),
+            NUM_TILES * (TILE_SIZE // mc.burst_size),
+            NUM_TILES * (TILE_SIZE // mc.burst_size),
+        )
 
         total_cycles = mc.replay(trace)
 
-        logging.info("Done: %d cycles, %s", total_cycles, tracker.summary())
-        logging.info("Read  latency: avg=%.1f p50=%d p90=%d p99=%d max=%d",
-                     tracker.read_stats.avg, tracker.read_stats.p50,
-                     tracker.read_stats.p90, tracker.read_stats.p99,
-                     tracker.read_stats.max)
-        logging.info("Write latency: avg=%.1f p50=%d p99=%d",
-                     tracker.write_stats.avg, tracker.write_stats.p50,
-                     tracker.write_stats.p99)
+        logger.info("Done: %d cycles, %s", total_cycles, tracker.summary())
+        logger.info(
+            "Read  latency: avg=%.1f p50=%d p90=%d p99=%d max=%d",
+            tracker.read_stats.avg,
+            tracker.read_stats.p50,
+            tracker.read_stats.p90,
+            tracker.read_stats.p99,
+            tracker.read_stats.max,
+        )
+        logger.info(
+            "Write latency: avg=%.1f p50=%d p99=%d",
+            tracker.write_stats.avg,
+            tracker.write_stats.p50,
+            tracker.write_stats.p99,
+        )
 
         report_dramsim3_stats(mc.get_stats())
 
