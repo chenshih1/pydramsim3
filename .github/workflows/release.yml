@@ -32,7 +32,10 @@ jobs:
             CIBW_ARCHS: "AMD64"
     env:
       CIBW_ARCHS: ${{ matrix.CIBW_ARCHS }}
-      CIBW_BUILD: ${{ inputs.build }}
+      # Empty inputs must NOT set an empty CIBW_BUILD: cibuildwheel treats
+      # an empty env value as "build everything" and would override the
+      # pyproject build selector (which excludes PyPy).
+      CIBW_BUILD: ${{ inputs.build != '' && inputs.build || 'cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*' }}
       # setup-python exports Python_ROOT_DIR pointing at the HOST python;
       # cibuildwheel leaks it into the manylinux container where the path
       # does not exist, breaking FindPython.  Empty values fall back to
