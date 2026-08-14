@@ -35,6 +35,13 @@ snake_case and the C++ names camelCase, one-to-one.
 A pre-commit config is provided; install it once with
 `pip install pre-commit && pre-commit install`.
 
+A pre-push hook runs lint + tests before every push:
+
+```bash
+scripts/pre-push.sh install   # once, installs .git/hooks/pre-push
+git push --no-verify          # emergency bypass
+```
+
 ## Benchmarks
 
 `benchmarks/benchmark.py` measures transaction throughput for the replay
