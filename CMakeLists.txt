@@ -22,7 +22,14 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 add_subdirectory("${DRAMSIM3_DIR}" "${DRAMSIM3_DIR}/build")
 
-find_package(Python REQUIRED COMPONENTS Interpreter Development)
+# scikit-build-core always injects -DPython_EXECUTABLE (the interpreter
+# driving the build); only fall back to a discovery step for standalone
+# CMake use.  Note: do NOT request the Development component here - recent
+# manylinux images ship interpreters without libpython, which FindPython
+# then fails on; pybind11 performs its own Python detection.
+if(NOT Python_EXECUTABLE)
+    find_package(Python REQUIRED COMPONENTS Interpreter)
+endif()
 
 execute_process(
     COMMAND "${Python_EXECUTABLE}" -c "
