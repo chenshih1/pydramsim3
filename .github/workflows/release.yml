@@ -13,6 +13,16 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - platform: ubuntu-latest
+            # x86_64 native + aarch64 via qemu
+            CIBW_ARCHS: "x86_64 aarch64"
+          - platform: macos-latest
+            CIBW_ARCHS: "x86_64 arm64"
+          - platform: windows-latest
+            CIBW_ARCHS: "AMD64"
+    env:
+      CIBW_ARCHS: ${{ matrix.CIBW_ARCHS }}
     steps:
       - uses: actions/checkout@v4
         with:

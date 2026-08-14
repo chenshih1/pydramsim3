@@ -44,6 +44,9 @@ Repository = "https://github.com/chenshih1/pydramsim3"
 build-dir = "build/{wheel_tag}"
 build.verbose = false
 cmake.build-type = "Release"
+# CMake >= 4 regressed FindPython on manylinux images (static libpython);
+# pin 3.x for deterministic cross-platform builds.
+cmake.version = ">=3.26,<4"
 wheel.install-dir = "pydramsim3"
 wheel.expand-macos-universal-tags = false
 wheel.exclude = [
@@ -61,9 +64,9 @@ test = ["pytest >= 7.0", "pytest-cov >= 4.0", "ruff >= 0.6"]
 
 [tool.cibuildwheel]
 build = "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*"
-archs = ["x86_64", "aarch64"]
-manylinux-x86_64-image = "manylinux2014"
-manylinux-aarch64-image = "manylinux2014"
+# manylinux2014 images are EOL (CentOS 7); use manylinux_2_28.
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 test-command = "python -c \"import pydramsim3; print(pydramsim3.__version__)\""
 
 [tool.pytest.ini_options]
