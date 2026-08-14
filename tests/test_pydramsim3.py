@@ -711,6 +711,24 @@ class TestReplay:
         assert total > 0
         assert mc.num_outstanding == 0
 
+    def test_replay_with_tags(self, tmp_path):
+        results = []
+        mc = MemoryController.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            read_complete=lambda addr, lat, tag: results.append((addr, tag)),
+        )
+        trace = [(0x1000 + i * 64, False, 9000 + i) for i in range(16)]
+        mc.replay(trace)
+        assert sorted(t for _, t in results) == list(range(9000, 9016))
+
+    def test_replay_mixed_tuple_lengths(self, tmp_path):
+        mc = MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
+        trace = [(0x1000, False), (0x1040, False, 7), (0x1080, False)]
+        total = mc.replay(trace)
+        assert total > 0
+        assert mc.num_outstanding == 0
+
 
 # ---------------------------------------------------------------------------
 # LatencyTracker

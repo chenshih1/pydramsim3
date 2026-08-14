@@ -247,7 +247,7 @@ class MemoryController:
 
     def replay(
         self,
-        trace: Iterable[tuple[int, bool]],
+        trace: Iterable[tuple[int, bool, Optional[int]]],
         *,
         gap_cycles: int = 0,
     ) -> int:
@@ -259,7 +259,9 @@ class MemoryController:
         Parameters
         ----------
         trace:
-            Iterable of ``(addr, is_write)`` pairs.
+            Iterable of ``(addr, is_write)`` pairs; a third element
+            ``(addr, is_write, tag)`` attaches a request tag to each
+            transaction (see :meth:`submit`).
         gap_cycles:
             Idle cycles to insert between consecutive transactions
             (models inter-request spacing).
@@ -271,8 +273,11 @@ class MemoryController:
         """
         start = self._current_cycle
         count = 0
-        for addr, is_write in trace:
-            while not self.submit(addr, is_write):
+        for entry in trace:
+            addr = entry[0]
+            is_write = entry[1]
+            tag = entry[2] if len(entry) > 2 else None
+            while not self.submit(addr, is_write, tag):
                 # Backpressure: wait for capacity inside C++ (single crossing
                 # instead of a Python submit/tick ping-pong per cycle).  The
                 # precise per-transaction acceptance check is done in C++.

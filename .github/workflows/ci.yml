@@ -40,6 +40,22 @@ jobs:
         run: pip install build
       - name: Build sdist and wheel
         run: python -m build
+      - name: Smoke-test the wheel in a fresh venv
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install -q dist/*.whl
+          /tmp/wheeltest/bin/python - <<'EOF'
+          import tempfile
+          import numpy as np
+          import pydramsim3
+          mc = pydramsim3.MemoryController.from_config(
+              "DDR4_8Gb_x8_2400", working_dir=tempfile.mkdtemp())
+          addrs = (0x1000 + np.arange(100) * 64).astype(np.uint64)
+          writes = np.arange(100) % 2 == 1
+          cycles = mc.run_trace(addrs, writes)
+          assert cycles > 0 and mc.num_outstanding == 0
+          print("wheel smoke test OK:", cycles, "cycles")
+          EOF
       - name: Verify wheel bundles runtime assets
         run: |
           python - <<'EOF'
