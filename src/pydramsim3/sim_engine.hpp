@@ -1,5 +1,5 @@
-#ifndef __PDRAMSIM3_SIM_ENGINE_HH__
-#define __PDRAMSIM3_SIM_ENGINE_HH__
+#ifndef PDRAMSIM3_SIM_ENGINE_HPP
+#define PDRAMSIM3_SIM_ENGINE_HPP
 
 #include <cstdint>
 #include <memory>
@@ -128,4 +128,4 @@ class SimEngine {
   mutable std::mutex mutex_;
 };
 
-#endif  // __PDRAMSIM3_SIM_ENGINE_HH__
+#endif  // PDRAMSIM3_SIM_ENGINE_HPP

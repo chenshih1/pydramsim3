@@ -14,7 +14,7 @@ using U64Array = py::array_t<uint64_t, py::array::c_style | py::array::forcecast
 using BoolArray = py::array_t<bool, py::array::c_style | py::array::forcecast>;
 
 // Export a (addrs, lats, tags) event buffer as numpy arrays and clear it.
-static py::tuple take_events_np(
+static py::tuple takeEventsNp(
     const std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
                      std::vector<uint64_t>>& events) {
   const auto& addrs_v = std::get<0>(events);
@@ -102,13 +102,13 @@ PYBIND11_MODULE(_dramsim3, m) {
            "completions as Python lists.")
       .def(
           "take_read_events_np",
-          [](SimEngine& self) { return take_events_np(self.takeReadEvents()); },
+          [](SimEngine& self) { return takeEventsNp(self.takeReadEvents()); },
           "Return and clear collected (addr, latency, tag) read "
           "completions as numpy arrays.")
       .def(
           "take_write_events_np",
           [](SimEngine& self) {
-            return take_events_np(self.takeWriteEvents());
+            return takeEventsNp(self.takeWriteEvents());
           },
           "Return and clear collected (addr, latency, tag) write "
           "completions as numpy arrays.")

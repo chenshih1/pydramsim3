@@ -288,7 +288,11 @@ class MemoryController:
                 self._retry_req = False
             count += 1
             if count % 1000 == 0:
-                logger.debug("replay: %d transactions submitted (cycle %d)", count, self._current_cycle)
+                logger.debug(
+                    "replay: %d transactions submitted (cycle %d)",
+                    count,
+                    self._current_cycle,
+                )
             if gap_cycles:
                 self.run(gap_cycles)
         self.drain()
