@@ -1,18 +1,40 @@
 # PyDRAMsim3
 
-[![CI](https://img.shields.io/github/actions/workflow/status/chenshih1/pydramsim3/ci.yml?branch=master&label=CI)](https://github.com/chenshih1/pydramsim3/actions)
-[![Python](https://img.shields.io/pypi/pyversions/pydramsim3)](https://pypi.org/project/pydramsim3/)
+[![CI](https://img.shields.io/github/actions/workflow/status/chenshih1/pydramsim3/ci.yml?branch=master&label=CI&logo=github)](https://github.com/chenshih1/pydramsim3/actions)
+[![Release](https://img.shields.io/github/v/release/chenshih1/pydramsim3?label=release&logo=github)](https://github.com/chenshih1/pydramsim3/releases)
+[![Python](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/chenshih1/pydramsim3)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows%20%7C%20aarch64-lightgrey)](https://github.com/chenshih1/pydramsim3/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Typing](https://img.shields.io/badge/typing-typed-228B22)](https://github.com/chenshih1/pydramsim3/blob/master/src/pydramsim3/py.typed)
 
-Python bindings for [DRAMsim3](https://github.com/umd-memsys/DRAMsim3), a cycle-accurate DRAM simulator. Designed for hardware architecture research — integrate DRAM timing models into CPU, GPU, or custom accelerator simulators.
+**PyDRAMsim3** is a high-performance Python binding for
+[DRAMsim3](https://github.com/umd-memsys/DRAMsim3), the cycle-accurate DRAM
+simulator.  It brings gem5-style memory-system semantics to Python: a
+flow-controlled `MemoryController` (submit / backpressure / retry /
+outstanding tracking) on top of a C++ `SimEngine` hot loop with bulk event
+export, per-transaction request tags, and zero-copy numpy trace driving.
+Designed for hardware architecture research — drop a timing-accurate DRAM
+model into CPU, GPU, or custom accelerator simulators, and get per-request
+latency, energy, and bandwidth statistics out of the box.
 
 ## Installation
 
+Prebuilt wheels are attached to the
+[GitHub Releases](https://github.com/chenshih1/pydramsim3/releases) page
+(CPython 3.8–3.13 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows):
+
 ```bash
-pip install -e .
+pip install <path-to>-pydramsim3-0.1.0-<platform>.whl
 ```
 
-Requires Python >= 3.8, pybind11 >= 2.11 (auto-resolved by the build system).
+Or build from source (requires Python >= 3.8 and a C++17 compiler;
+pybind11 >= 2.11 is resolved automatically by the build system):
+
+```bash
+git clone --recursive https://github.com/chenshih1/pydramsim3.git
+cd pydramsim3
+pip install .
+```
 
 ## Quick Start
 
@@ -257,11 +279,29 @@ MemoryController.from_config(config_name, working_dir=None, *, read_complete=Non
 
 **Context manager:** `MemoryController` supports `with` statements.
 
+## Performance
+
+The simulation hot loop lives in C++ (`SimEngine`): submission, batched
+ticking, backpressure waits, outstanding tracking, and per-transaction
+latency all run natively, with completion events exported in bulk and the
+GIL released during long runs.  `run_trace` drives whole traces with a
+single zero-copy numpy crossing.
+
+Measured on a DDR4-2400 config (`benchmarks/benchmark.py`, 100k mixed
+transactions, single thread):
+
+| Path | Throughput |
+|---|---|
+| `replay()` (Python loop) | ~156 ktx/s |
+| `run_trace()` (numpy, zero-copy) | ~188 ktx/s |
+| `run_trace()` + latency callbacks | ~182 ktx/s |
+
 ## Testing
 
 ```bash
-pip install pytest
-pytest tests/ -v
+pip install ".[test]"
+pytest tests/
+ruff check src/ tests/ examples/ benchmarks/
 ```
 
 ## Examples
