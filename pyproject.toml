@@ -44,9 +44,6 @@ Repository = "https://github.com/chenshih1/pydramsim3"
 build-dir = "build/{wheel_tag}"
 build.verbose = false
 cmake.build-type = "Release"
-# CMake >= 4 regressed FindPython on manylinux images (static libpython);
-# pin 3.x for deterministic cross-platform builds.
-cmake.version = ">=3.26,<4"
 wheel.install-dir = "pydramsim3"
 wheel.expand-macos-universal-tags = false
 wheel.exclude = [

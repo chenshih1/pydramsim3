@@ -32,6 +32,10 @@ jobs:
           python-version: "3.11"
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.23
+        env:
+          # CMake >= 4 regressed FindPython on manylinux images; the
+          # container ships cmake 4.0 via pipx, downgrade to 3.31.
+          CIBW_BEFORE_ALL_LINUX: pipx install --force cmake==3.31.6
         with:
           output-dir: wheelhouse
       - uses: actions/upload-artifact@v4
