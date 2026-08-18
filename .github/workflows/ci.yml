@@ -36,7 +36,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install tooling
-        run: pip install ruff mypy
+        run: |
+          pip install -e ".[test]"
+          pip install mypy
       - name: Lint
         run: ruff check src/ tests/ examples/ benchmarks/
       - name: Format check
