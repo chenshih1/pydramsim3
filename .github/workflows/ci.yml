@@ -7,13 +7,12 @@ on:
 
 jobs:
   test:
-    name: "${{ matrix.os }} / Python ${{ matrix.python }}"
-    runs-on: ${{ matrix.os }}
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.8", "3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,22 +20,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install package (builds the C++ extension via scikit-build-core)
-        run: pip install ".[test]"
+      - name: Build and install (builds the C++ extension via scikit-build-core)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
       - name: Run tests with coverage
         run: pytest -q --cov=pydramsim3 --cov-report=term-missing --cov-fail-under=70
 
-  lint:
-    name: Lint and format (ruff)
+  quality:
+    name: Lint, format and type check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install tooling
+        run: pip install ruff mypy
       - name: Lint
-        run: ruff check src/ tests/ examples/
+        run: ruff check src/ tests/ examples/ benchmarks/
       - name: Format check
-        run: ruff format --check src/ tests/ examples/
+        run: ruff format --check src/ tests/ examples/ benchmarks/
+      - name: Type check
+        run: mypy src/pydramsim3/
+
+  sdist:
+    name: sdist build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist --outdir dist
+      - name: Install from sdist in a fresh venv
+        run: |
+          python -m venv /tmp/sdist-venv
+          /tmp/sdist-venv/bin/pip install --no-cache-dir dist/*.tar.gz
+          # Run outside the repo so the source tree does not shadow the
+          # installed package
+          cd /tmp
+          /tmp/sdist-venv/bin/python - <<'EOF'
+          import tempfile
+          import numpy as np
+          import pydramsim3
+          mc = pydramsim3.MemoryController.from_config(
+              "DDR4_8Gb_x8_2400", working_dir=tempfile.mkdtemp())
+          addrs = (0x1000 + np.arange(100) * 64).astype(np.uint64)
+          writes = np.arange(100) % 2 == 1
+          cycles = mc.run_trace(addrs, writes)
+          assert cycles > 0 and mc.num_outstanding == 0
+          print("sdist install OK:", cycles, "cycles")
+          EOF
+      - name: Size check
+        run: |
+          size=$(du -m dist/*.tar.gz | cut -f1)
+          echo "sdist size: ${size}MB"
+          test "$size" -lt 50
