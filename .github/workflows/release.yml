@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23
+        uses: pypa/cibuildwheel@v4.2
         env:
           # CMake >= 4 regressed FindPython on manylinux images; the
           # container ships cmake 4.0 via pipx, downgrade to 3.31.
