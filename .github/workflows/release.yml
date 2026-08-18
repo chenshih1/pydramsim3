@@ -60,7 +60,7 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: pipx install --force cmake==3.31.6
         with:
           output-dir: wheelhouse
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform }}
           path: ./wheelhouse/*.whl
@@ -79,7 +79,7 @@ jobs:
         run: |
           pip install build
           python -m build --sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
