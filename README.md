@@ -29,6 +29,13 @@ cd pydramsim3
 pip install .
 ```
 
+The vendored DRAMsim3 (a pinned commit) is normally fetched by
+`--recursive`; if it is missing, the build downloads the pinned source
+tarball into `third_party/` automatically — no manual `git submodule
+update --init` needed.  To fetch from a different mirror, configure the
+build with `-DPYDRAMSIM3_DRAMSIM3_TARBALL_URL=...`; disable the
+auto-fetch with `-DPYDRAMSIM3_FETCH_DRAMSIM3=OFF`.
+
 Source distributions are attached to the
 [GitHub Releases](https://github.com/chenshih1/pydramsim3/releases) page:
 

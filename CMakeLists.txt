@@ -35,9 +35,70 @@ else()
 endif()
 
 set(DRAMSIM3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dramsim3")
+
+# Vendored dependency pin: must match the gitlink recorded in the index
+# (git ls-files -s third_party/dramsim3) and .gitmodules.
+set(DRAMSIM3_PINNED_SHA "29817593b3389f1337235d63cac515024ab8fd6e")
+
+option(PYDRAMSIM3_FETCH_DRAMSIM3
+    "Auto-download the vendored DRAMsim3 into third_party/ when missing" ON)
+set(PYDRAMSIM3_DRAMSIM3_TARBALL_URL
+    "https://codeload.github.com/umd-memsys/DRAMsim3/tar.gz/${DRAMSIM3_PINNED_SHA}"
+    CACHE STRING
+    "Source tarball to fetch DRAMsim3 from when auto-fetch is enabled")
+set(PYDRAMSIM3_FETCH_RETRIES 3 CACHE STRING
+    "Auto-fetch download attempts before giving up")
+
 if(NOT EXISTS "${DRAMSIM3_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "DRAMSim3 not found at '${DRAMSIM3_DIR}'.\n"
-                        "Please run: git submodule update --init")
+    if(PYDRAMSIM3_FETCH_DRAMSIM3)
+        message(STATUS
+            "DRAMsim3 not found; downloading pinned source ${DRAMSIM3_PINNED_SHA}")
+        set(_dramsim3_tar "${CMAKE_BINARY_DIR}/dramsim3-${DRAMSIM3_PINNED_SHA}.tar.gz")
+        set(_dramsim3_fetch_ok FALSE)
+        foreach(_attempt RANGE 1 ${PYDRAMSIM3_FETCH_RETRIES})
+            file(DOWNLOAD "${PYDRAMSIM3_DRAMSIM3_TARBALL_URL}" "${_dramsim3_tar}"
+                STATUS _dramsim3_dl_status TIMEOUT 300 SHOW_PROGRESS)
+            list(GET _dramsim3_dl_status 0 _dramsim3_dl_code)
+            if(_dramsim3_dl_code EQUAL 0)
+                set(_dramsim3_fetch_ok TRUE)
+                break()
+            endif()
+            message(STATUS
+                "DRAMsim3 download failed (attempt ${_attempt}/${PYDRAMSIM3_FETCH_RETRIES})")
+        endforeach()
+        if(NOT _dramsim3_fetch_ok)
+            message(FATAL_ERROR
+                "Failed to download DRAMsim3 from ${PYDRAMSIM3_DRAMSIM3_TARBALL_URL}.\n"
+                "Check your network connection, or run: git submodule update --init")
+        endif()
+        # Only now (download succeeded) replace any partial checkout: the
+        # fetch branch triggers only when no CMakeLists.txt exists, so the
+        # directory cannot hold a valid source tree.
+        file(REMOVE_RECURSE "${DRAMSIM3_DIR}")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E tar xzf "${_dramsim3_tar}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+            RESULT_VARIABLE _dramsim3_tar_result
+        )
+        if(NOT _dramsim3_tar_result EQUAL 0)
+            message(FATAL_ERROR "Failed to extract the DRAMsim3 tarball")
+        endif()
+        file(GLOB _dramsim3_extracted
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/DRAMsim3-*")
+        if(NOT _dramsim3_extracted)
+            message(FATAL_ERROR
+                "DRAMsim3 tarball extracted to an unexpected directory layout")
+        endif()
+        list(GET _dramsim3_extracted 0 _dramsim3_extracted_dir)
+        file(RENAME "${_dramsim3_extracted_dir}" "${DRAMSIM3_DIR}")
+        if(NOT EXISTS "${DRAMSIM3_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR "Fetched DRAMsim3 tree is missing CMakeLists.txt")
+        endif()
+        message(STATUS "DRAMsim3 fetched into third_party/ (${DRAMSIM3_PINNED_SHA})")
+    else()
+        message(FATAL_ERROR "DRAMsim3 not found at '${DRAMSIM3_DIR}'.\n"
+                            "Please run: git submodule update --init")
+    endif()
 endif()
 
 # DRAMsim3 declares cmake_minimum_required(3.0), which CMake >= 4 rejects;
