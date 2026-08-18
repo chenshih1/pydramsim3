@@ -9,6 +9,31 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
+# Emit per-function/per-data sections and let the linker drop the ones we
+# never call: the vendored simulator carries a main binary, thermal and
+# test code that a wheel must not drag along.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-ffunction-sections -fdata-sections)
+    if(APPLE)
+        add_link_options("-Wl,-dead_strip")
+    else()
+        add_link_options("-Wl,--gc-sections")
+    endif()
+endif()
+
+# Whole-program optimization: the simulation hot loop spans sim_engine.cpp
+# and the vendored sources, so interprocedural inlining across that
+# boundary is where LTO pays off.  Release-only so debug rebuilds stay
+# fast.  GCC, Clang and MSVC all support it; check_ipo_supported degrades
+# gracefully on toolchains that do not.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT _ipo_supported)
+if(_ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+else()
+    message(STATUS "LTO/IPO not supported by this toolchain; skipping")
+endif()
+
 set(DRAMSIM3_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dramsim3")
 if(NOT EXISTS "${DRAMSIM3_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "DRAMSim3 not found at '${DRAMSIM3_DIR}'.\n"
@@ -20,7 +45,39 @@ endif()
 # CMake) can configure the vendored submodule.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-add_subdirectory("${DRAMSIM3_DIR}" "${DRAMSIM3_DIR}/build")
+# Configure the vendored tree but exclude its targets from the default
+# build: we only reuse its interface libraries (inih, format) and its
+# source list for the static library below.
+add_subdirectory("${DRAMSIM3_DIR}" "${CMAKE_BINARY_DIR}/dramsim3" EXCLUDE_FROM_ALL)
+set_target_properties(dramsim3main dramsim3test PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+# Link DRAMsim3 statically into the extension module: one DSO total, which
+# lets LTO optimize across the whole simulator, removes the
+# $ORIGIN/@loader_path rpath dance and the Windows dllexport workaround.
+get_target_property(_DRAMSIM3_SRCS dramsim3 SOURCES)
+set(_DRAMSIM3_SRCS_ABS)
+foreach(_src IN LISTS _DRAMSIM3_SRCS)
+    if(NOT IS_ABSOLUTE "${_src}")
+        list(APPEND _DRAMSIM3_SRCS_ABS "${DRAMSIM3_DIR}/${_src}")
+    else()
+        list(APPEND _DRAMSIM3_SRCS_ABS "${_src}")
+    endif()
+endforeach()
+
+add_library(dramsim3_static STATIC ${_DRAMSIM3_SRCS_ABS})
+target_include_directories(dramsim3_static PUBLIC
+    "${DRAMSIM3_DIR}/src"
+    "${DRAMSIM3_DIR}/ext/headers"
+    "${DRAMSIM3_DIR}/ext/fmt/include"
+)
+target_compile_definitions(dramsim3_static PUBLIC FMT_HEADER_ONLY=1)
+target_compile_options(dramsim3_static PRIVATE -Wall)
+target_link_libraries(dramsim3_static PUBLIC inih format)
+set_target_properties(dramsim3_static PROPERTIES
+    CXX_STANDARD 11
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
 
 # scikit-build-core always injects -DPython_EXECUTABLE (the interpreter
 # driving the build); only fall back to a discovery step for standalone
@@ -86,39 +143,17 @@ target_include_directories(_dramsim3 PRIVATE
     "${DRAMSIM3_DIR}/ext/fmt/include"
 )
 
-target_link_libraries(_dramsim3 PRIVATE dramsim3)
+target_link_libraries(_dramsim3 PRIVATE dramsim3_static)
 
-# macOS uses @loader_path, not Linux's $ORIGIN, to resolve the bundled
-# libdramsim3.dylib next to the module.
-if(APPLE)
-    set(PYDRAMSIM3_RPATH "@loader_path")
+if(MSVC)
+    target_compile_options(_dramsim3 PRIVATE /W4)
 else()
-    set(PYDRAMSIM3_RPATH "$ORIGIN")
+    target_compile_options(_dramsim3 PRIVATE -Wall -Wextra)
 endif()
-
-set_target_properties(_dramsim3 PROPERTIES
-    INSTALL_RPATH "${PYDRAMSIM3_RPATH}"
-    BUILD_RPATH "${PYDRAMSIM3_RPATH}"
-)
-
-# DRAMsim3 declares no dllexport symbols; without this MSVC produces a DLL
-# with no import library and linking _dramsim3 fails with LNK1181.
-if(WIN32)
-    set_target_properties(dramsim3 PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-endif()
-
-add_custom_command(TARGET _dramsim3 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:dramsim3>
-        $<TARGET_FILE_DIR:_dramsim3>/
-)
 
 install(TARGETS _dramsim3
         LIBRARY DESTINATION .
         RUNTIME DESTINATION .)
-
-install(FILES $<TARGET_FILE:dramsim3>
-        DESTINATION .)
 
 install(
     FILES
