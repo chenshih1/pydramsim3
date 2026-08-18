@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/chenshih1/pydramsim3/ci.yml?branch=master&label=CI&logo=github)](https://github.com/chenshih1/pydramsim3/actions)
 [![Release](https://img.shields.io/github/v/release/chenshih1/pydramsim3?label=release&logo=github)](https://github.com/chenshih1/pydramsim3/releases)
 [![Python](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/chenshih1/pydramsim3)
-[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows%20%7C%20aarch64-lightgrey)](https://github.com/chenshih1/pydramsim3/releases)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows%20%7C%20aarch64-lightgrey)](https://github.com/chenshih1/pydramsim3/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Typing](https://img.shields.io/badge/typing-typed-228B22)](https://github.com/chenshih1/pydramsim3/blob/master/src/pydramsim3/py.typed)
 
@@ -19,22 +19,26 @@ latency, energy, and bandwidth statistics out of the box.
 
 ## Installation
 
-Prebuilt wheels are attached to the
-[GitHub Releases](https://github.com/chenshih1/pydramsim3/releases) page
-(CPython 3.8–3.13 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows):
-
-```bash
-pip install <path-to>-pydramsim3-0.1.0-<platform>.whl
-```
-
-Or build from source (requires Python >= 3.8 and a C++17 compiler;
-pybind11 >= 2.11 is resolved automatically by the build system):
+PyDRAMsim3 is not distributed as prebuilt wheels; build it from source
+(requires Python >= 3.8 and a C++17 compiler; pybind11 >= 2.11 and CMake
+are resolved automatically by the build system):
 
 ```bash
 git clone --recursive https://github.com/chenshih1/pydramsim3.git
 cd pydramsim3
 pip install .
 ```
+
+Source distributions are attached to the
+[GitHub Releases](https://github.com/chenshih1/pydramsim3/releases) page:
+
+```bash
+pip install pydramsim3-0.1.0.tar.gz
+```
+
+Release builds enable LTO (whole-program optimization) and link the
+vendored DRAMsim3 statically into a single extension module, so no
+separate runtime library is bundled.
 
 ## Quick Start
 
@@ -292,9 +296,9 @@ transactions, single thread):
 
 | Path | Throughput |
 |---|---|
-| `replay()` (Python loop) | ~156 ktx/s |
-| `run_trace()` (numpy, zero-copy) | ~188 ktx/s |
-| `run_trace()` + latency callbacks | ~182 ktx/s |
+| `replay()` (Python loop) | ~150 ktx/s |
+| `run_trace()` (numpy, zero-copy) | ~177 ktx/s |
+| `run_trace()` + latency callbacks | ~175 ktx/s |
 
 ## Testing
 
