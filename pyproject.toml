@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pydramsim3"
-version = "0.1.0"
+version = "0.2.0"
 description = "High-performance Python bindings for the DRAMsim3 cycle-accurate memory simulator with a gem5-aligned controller API"
 readme = "README.md"
 license = { file = "LICENSE" }
