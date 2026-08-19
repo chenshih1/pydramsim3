@@ -3,7 +3,6 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/chenshih1/pydramsim3/ci.yml?branch=master&label=CI&logo=github)](https://github.com/chenshih1/pydramsim3/actions)
 [![Release](https://img.shields.io/github/v/release/chenshih1/pydramsim3?label=release&logo=github)](https://github.com/chenshih1/pydramsim3/releases)
 [![Python](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/chenshih1/pydramsim3)
-[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macos%20%7C%20windows%20%7C%20aarch64-lightgrey)](https://github.com/chenshih1/pydramsim3/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Typing](https://img.shields.io/badge/typing-typed-228B22)](https://github.com/chenshih1/pydramsim3/blob/master/src/pydramsim3/py.typed)
 
@@ -46,6 +45,9 @@ pip install pydramsim3-0.3.0.tar.gz
 Release builds enable LTO (whole-program optimization) and link the
 vendored DRAMsim3 statically into a single extension module, so no
 separate runtime library is bundled.
+
+Platforms: buildable from source on any platform with a C++17 compiler
+and CMake; CI is verified on Linux.
 
 ## Quick Start
 
@@ -331,4 +333,4 @@ See [examples/accelerator_sim.py](examples/accelerator_sim.py) for a complete ex
 
 ## License
 
-PyDRAMsim3 is licensed under the MIT License. DRAMsim3 is used under its original license (BSD-3-Clause).
+PyDRAMsim3 is licensed under the MIT License. DRAMsim3 is used under its original license (MIT).
