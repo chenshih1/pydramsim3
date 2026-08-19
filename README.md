@@ -40,7 +40,7 @@ Source distributions are attached to the
 [GitHub Releases](https://github.com/chenshih1/pydramsim3/releases) page:
 
 ```bash
-pip install pydramsim3-0.1.0.tar.gz
+pip install pydramsim3-0.3.0.tar.gz
 ```
 
 Release builds enable LTO (whole-program optimization) and link the
