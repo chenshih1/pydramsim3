@@ -225,6 +225,16 @@ mc.stats_txt_path   # -> working_dir/dramsim3.txt
 
 ## API Reference
 
+### Pythonic conveniences
+
+- `RequestType.READ / RequestType.WRITE` — enum request directions; `submit`
+  and `replay` also accept a plain `bool` for backward compatibility.
+- `mc.completions()` — a generator that advances the clock and yields every
+  completion as a `Completion(addr, latency, tag, is_write)` namedtuple, in
+  exact DRAM timing order. Consume completions in a `for` loop instead of
+  wiring callbacks.
+- `mc.stats` — property alias for `get_stats()`.
+
 ### Module Functions
 
 | Function | Description |

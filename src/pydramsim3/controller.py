@@ -10,21 +10,43 @@ adding gem5-style flow control, retry semantics and optional user callbacks.
 
 from __future__ import annotations
 
+import enum
 import inspect
 import logging
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
 from ._dramsim3 import SimEngine
 
-__all__ = ["MemoryController"]
+__all__ = ["Completion", "MemoryController", "RequestType"]
 
 logger = logging.getLogger(__name__)
 
 _CALLBACK = Callable[[int, int, int], None]
+
+
+class RequestType(enum.Enum):
+    """Direction of a memory transaction."""
+
+    READ = 0
+    WRITE = 1
+
+    def __bool__(self) -> bool:
+        """True for writes, so a RequestType drops into bool ``is_write`` args."""
+        return self is RequestType.WRITE
+
+
+class Completion(NamedTuple):
+    """A completed memory transaction, as yielded by :meth:`MemoryController.completions`."""
+
+    addr: int
+    latency: int
+    tag: int
+    is_write: bool
 
 
 def _adapt_callback(cb: Callable[..., None] | None) -> _CALLBACK | None:
@@ -180,19 +202,26 @@ class MemoryController:
 
     # -- Core API (mirrors gem5 recvTimingReq / tick) ----------------------
 
-    def submit(self, addr: int, is_write: bool, tag: int | None = None) -> bool:
+    def submit(
+        self,
+        addr: int,
+        is_write: bool | RequestType,
+        tag: int | None = None,
+    ) -> bool:
         """Submit a transaction.  Returns False on backpressure.
 
-        ``tag`` is an opaque request id returned with the completion event
-        (gem5 ``PacketPtr`` analog); use it to identify which request
-        completed when multiple requests share an address.
+        ``is_write`` may be a :class:`RequestType` or a plain bool
+        (``True`` = write).  ``tag`` is an opaque request id returned with
+        the completion event (gem5 ``PacketPtr`` analog); use it to
+        identify which request completed when multiple requests share an
+        address.
 
         Corresponds to gem5 ``DRAMsim3::recvTimingReq``.
         """
         if self._retry_req:
             return False
 
-        if not self._engine.try_enqueue(addr, is_write, 0 if tag is None else tag):
+        if not self._engine.try_enqueue(addr, bool(is_write), 0 if tag is None else tag):
             self._retry_req = True
             return False
         return True
@@ -242,7 +271,7 @@ class MemoryController:
 
     def replay(
         self,
-        trace: Iterable[tuple[int, bool, int | None]],
+        trace: Iterable[tuple[int, bool | RequestType, int | None]],
         *,
         gap_cycles: int = 0,
     ) -> int:
@@ -254,7 +283,8 @@ class MemoryController:
         Parameters
         ----------
         trace:
-            Iterable of ``(addr, is_write)`` pairs; a third element
+            Iterable of ``(addr, is_write)`` pairs, where ``is_write`` is a
+            :class:`RequestType` or bool; a third element
             ``(addr, is_write, tag)`` attaches a request tag to each
             transaction (see :meth:`submit`).
         gap_cycles:
@@ -270,7 +300,7 @@ class MemoryController:
         count = 0
         for entry in trace:
             addr = entry[0]
-            is_write = entry[1]
+            is_write = bool(entry[1])
             tag = entry[2] if len(entry) > 2 else None
             while not self.submit(addr, is_write, tag):
                 # Backpressure: wait for capacity inside C++ (single crossing
@@ -349,6 +379,41 @@ class MemoryController:
         return elapsed
 
     # -- Completion dispatch -----------------------------------------------
+
+    def _iter_completions(self) -> Iterator[Completion]:
+        """Yield the currently collected completion events (and clear them)."""
+        for is_write, (addrs, lats, tags) in (
+            (False, self._engine.take_read_events()),
+            (True, self._engine.take_write_events()),
+        ):
+            for addr, lat, tag in zip(addrs, lats, tags):
+                yield Completion(addr, lat, tag, is_write)
+
+    def completions(self) -> Iterator[Completion]:
+        """Yield completion events in DRAM timing order, advancing the clock.
+
+        Ticks one cycle at a time so completions arrive in exactly the
+        order DRAMsim3 produces them, until every outstanding transaction
+        has completed.  Prefer this to callbacks when you want to consume
+        completions in a ``for`` loop; the two styles are mutually
+        exclusive (callbacks consume the collected events).
+
+        Examples
+        --------
+        >>> mc = MemoryController.from_config("DDR4_8Gb_x8_2400")
+        >>> for addr in range(0x1000, 0x1000 + 64 * 8, 64):
+        ...     mc.submit(addr, RequestType.READ)
+        >>> lats = [c.latency for c in mc.completions()]
+        """
+        if not self._collect:
+            self._engine.set_collect(True)
+            self._collect = True
+        while self.num_outstanding:
+            self._engine.tick(1)
+            self._current_cycle += 1
+            if self._retry_req and self.num_outstanding < self._queue_size:
+                self._retry_req = False
+            yield from self._iter_completions()
 
     def _dispatch_completions(self) -> None:
         """Drain engine completion events into the user callbacks, if any."""
@@ -469,6 +534,11 @@ class MemoryController:
                 f"Is working_dir ({self._working_dir}) writable?"
             )
         return json.loads(path.read_text())
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """DRAMsim3 JSON statistics as a dict (alias for :meth:`get_stats`)."""
+        return self.get_stats()
 
     def reset_stats(self) -> None:
         """Reset all accumulated statistics."""

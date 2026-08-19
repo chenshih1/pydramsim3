@@ -2,9 +2,11 @@ import numpy as np
 import pytest
 
 from pydramsim3 import (
+    Completion,
     LatencyStats,
     LatencyTracker,
     MemoryController,
+    RequestType,
     configs_dir,
     list_configs,
 )
@@ -856,3 +858,69 @@ class TestLatencyStats:
         r = repr(stats)
         assert "n=3" in r
         assert "avg=" in r
+
+
+# ---------------------------------------------------------------------------
+# Pythonic API: RequestType enum, completions() generator, stats property
+# ---------------------------------------------------------------------------
+
+
+class TestPythonic:
+    """Pythonic surface: enum request types, generator completion consumption."""
+
+    @staticmethod
+    def _mc(tmp_path, **kw):
+        return MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), **kw)
+
+    def test_request_type_enum(self):
+        assert RequestType.READ != RequestType.WRITE
+        assert bool(RequestType.WRITE) is True
+        assert bool(RequestType.READ) is False
+
+    def test_submit_accepts_request_type_and_bool(self, tmp_path):
+        mc = self._mc(tmp_path)
+        assert mc.submit(0x1000, RequestType.READ) is True
+        assert mc.submit(0x1000, RequestType.WRITE) is True
+        assert mc.submit(0x2000, True) is True  # legacy bool still works
+        assert mc.submit(0x2000, False) is True
+        mc.drain()
+
+    def test_replay_accepts_request_type(self, tmp_path):
+        mc = self._mc(tmp_path)
+        trace = [
+            (0x1000 + i * 64, RequestType.READ if i % 2 else RequestType.WRITE) for i in range(20)
+        ]
+        cycles = mc.replay(trace)
+        assert cycles > 0
+        assert mc.num_outstanding == 0
+
+    def test_completions_generator(self, tmp_path):
+        mc = self._mc(tmp_path)
+        for i in range(16):
+            assert mc.submit(0x1000 + i * 64, RequestType.READ, tag=i)
+        completions = list(mc.completions())
+        assert len(completions) == 16
+        assert all(isinstance(c, Completion) for c in completions)
+        # Completion order matches tag order (FIFO per address, single batch)
+        assert [c.tag for c in completions] == list(range(16))
+        assert all(c.is_write is False for c in completions)
+        assert all(c.latency > 0 for c in completions)
+        assert mc.num_outstanding == 0
+
+    def test_completions_includes_writes(self, tmp_path):
+        mc = self._mc(tmp_path)
+        for i in range(8):
+            assert mc.submit(0x1000 + i * 64, RequestType.WRITE)
+        completions = list(mc.completions())
+        assert len(completions) == 8
+        assert all(c.is_write for c in completions)
+        assert mc.num_outstanding == 0
+
+    def test_stats_property(self, tmp_path):
+        mc = self._mc(tmp_path)
+        mc.submit(0x1000, RequestType.READ)
+        mc.drain()
+        stats = mc.stats
+        assert isinstance(stats, dict)
+        assert "0" in stats
+        assert stats["0"]["num_reads_done"] >= 1

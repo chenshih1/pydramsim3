@@ -11,13 +11,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .controller import MemoryController
+from .controller import Completion, MemoryController, RequestType
 from .tracker import LatencyStats, LatencyTracker
 
 __all__ = [
+    "Completion",
     "LatencyStats",
     "LatencyTracker",
     "MemoryController",
+    "RequestType",
     "configs_dir",
     "list_configs",
 ]
