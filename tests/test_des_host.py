@@ -89,7 +89,7 @@ class TestTagQuota:
         e.set_tag_quota(1, 1)
         e.set_tag_quota(2, 2)
         e.advance_until(10_000_000, True)
-        addrs, _, tags, _ = e.take_read_completions()
+        _, _, tags, _ = e.take_read_completions()
         # Tag 1 is one burst; must not have drained tag 2's second burst
         # as a requirement — at least tag 1 is present.  Tag 2 may share
         # the same ClockTick.
