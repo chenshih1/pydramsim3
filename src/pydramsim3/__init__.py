@@ -1,11 +1,8 @@
-"""PyDRAMsim3 — Python bindings for the DRAMsim3 cycle-accurate memory simulator.
+"""PyDRAMsim3 — event-driven Python host for DRAMsim3.
 
-:class:`Memory` is the host API: ``submit``, then ``wait`` / ``advance_to``
-/ ``drain``.  Python wakes on completions; DRAMsim3 still runs
+:class:`Memory` is the public API: ``submit``, then ``wait`` /
+``advance_to`` / ``drain``.  Python wakes on completions; DRAMsim3 runs
 cycle-accurately in C++.
-
-The C++ engine (:mod:`pydramsim3._dramsim3.SimEngine`) owns the hot loop:
-batched ticks, frontend queue, bulk event export, numpy trace driving.
 """
 
 from __future__ import annotations

@@ -38,7 +38,7 @@ static py::tuple takeCompletionsNp(
 }
 
 PYBIND11_MODULE(_dramsim3, m) {
-  m.doc() = "Python bindings for DRAMsim3 memory simulator";
+  m.doc() = "Internal C++ engine behind pydramsim3.Memory";
 
   // High-performance engine: the hot loop (submission, backpressure waits,
   // batching, outstanding tracking, per-transaction latency) lives entirely

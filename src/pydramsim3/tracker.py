@@ -1,4 +1,4 @@
-"""Latency collection and percentile reporting."""
+"""Per-transaction latency collection and percentiles."""
 
 from __future__ import annotations
 

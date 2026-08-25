@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""Throughput benchmark for pydramsim3.
+"""Throughput of ``Memory.replay`` vs ``Memory.run_trace``.
 
-Measures transactions/second for the Python-loop ``replay()`` path vs the
-zero-copy numpy ``run_trace()`` path.
-
-Run::
-
-    python benchmarks/benchmark.py
+Run ``python benchmarks/benchmark.py``.
 """
 
 from __future__ import annotations

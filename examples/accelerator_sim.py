@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Example: simulating a hardware accelerator's memory traffic with DRAMsim3.
+"""Example: accelerator memory traffic on the event-driven Memory API.
 
-Demonstrates the event-driven ``Memory`` API: submit a trace, then ``drain``
-and read ``Completion.latency`` / ``Completion.cycle``.
+Submit a tile-read / result-write trace, ``drain``, then read
+``Completion.latency`` and ``Completion.cycle``.
 """
 
 from __future__ import annotations

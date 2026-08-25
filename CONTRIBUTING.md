@@ -1,7 +1,15 @@
 # Contributing
 
-Thanks for your interest in PyDRAMsim3! This project is small and
-research-oriented; any help is welcome.
+Thanks for your interest in PyDRAMsim3.  The project is small and
+research-oriented.
+
+The public host is `Memory` (`src/pydramsim3/memory.py`): discrete-event
+`submit` / `wait` / `drain`.  The C++ hot loop is
+`src/pydramsim3/sim_engine.{hpp,cpp}`; pybind11 is
+`src/pydramsim3/_dramsim3.cpp`.  Python names are snake_case, C++ names
+camelCase, one-to-one.
+
+The last cycle-driven `MemoryController` tree is branch `0.3.0`.
 
 ## Development setup
 
@@ -9,20 +17,17 @@ Requires a C++17 compiler, CMake (>= 3.15), and Python >= 3.8.
 
 ```bash
 git clone --recursive https://github.com/chenshih1/pydramsim3.git
+# or: git clone --recursive https://gitee.com/chenshih1/pydramsim3.git
 cd pydramsim3
 python -m venv .venv
 .venv/bin/pip install -e ".[test]"   # builds the C++ extension in place
 ```
 
-The `--recursive` flag is required: the DRAMsim3 submodule carries the
-vendored simulator sources (also used by the sdist).
+`--recursive` fetches the vendored DRAMsim3 sources (also used by the sdist).
 
 ## Working on the C++ layer
 
-The extension is rebuilt by `pip install -e .` (scikit-build-core).  The
-hot loop lives in `src/pydramsim3/sim_engine.{hpp,cpp}`; the pybind11
-surface is `src/pydramsim3/_dramsim3.cpp`.  Keep the Python-facing names
-snake_case and the C++ names camelCase, one-to-one.
+Rebuild with `pip install -e .` (scikit-build-core).
 
 ## Checks
 

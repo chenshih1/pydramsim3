@@ -1,7 +1,7 @@
-"""Event-driven DRAM server: submit, wait for completions, pull results.
+"""Discrete-event DRAM host: submit, wait for completions, pull results.
 
-The C++ engine still runs DRAMsim3 cycle-accurately; Python only wakes on
-completions or a host deadline.
+DRAMsim3 stays cycle-accurate in C++; Python only wakes on completions
+or a host deadline.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def _completion_list(engine: SimEngine) -> list[Completion]:
 
 
 class Memory:
-    """Timed memory server for a discrete-event host.
+    """DRAM timing model for a discrete-event host.
 
     Parameters
     ----------

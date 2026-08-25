@@ -4,7 +4,9 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x   | Yes       |
+| 0.4.x   | Yes |
+| 0.3.x   | Frozen (`MemoryController` line, branch `0.3.0`) |
+| < 0.3   | No |
 
 ## Reporting a Vulnerability
 

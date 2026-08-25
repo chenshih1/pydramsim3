@@ -1,11 +1,12 @@
 cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as follows."
-title: "PyDRAMsim3 — Python bindings for the DRAMsim3 memory simulator"
+title: "PyDRAMsim3 — event-driven Python host for DRAMsim3"
 abstract: >-
-  A high-performance Python binding for DRAMsim3 (cycle-accurate DRAM
-  modeling) with an event-driven Memory host, a C++ SimEngine hot loop
-  with bulk event export, and zero-copy numpy trace driving.  Designed for
-  CPU/GPU/accelerator architecture simulation.
+  Discrete-event Python bindings for DRAMsim3.  The host API is
+  submit / wait / drain; DRAMsim3 remains cycle-accurate in C++.
+  Includes a SimEngine hot loop, bulk completion export, and zero-copy
+  numpy trace driving.  For CPU, GPU, and accelerator architecture
+  simulation.
 authors:
   - family-names: Chen
     given-names: Shi
