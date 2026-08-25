@@ -11,7 +11,7 @@ authors:
   - family-names: Chen
     given-names: Shi
     email: chenshi8603@163.com
-version: "0.4.0"
+version: "0.4.1"
 date-released: "2026-08-25"
 license: MIT
 keywords:
