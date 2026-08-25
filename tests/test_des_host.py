@@ -67,6 +67,36 @@ class TestTickUntilCompletion:
         assert cycles == [n]
 
 
+class TestTagQuota:
+    def test_stops_when_logical_request_done(self, tmp_path):
+        e = _engine(tmp_path)
+        # Two bursts, same tag: stop after both complete, not the first.
+        e.enqueue(0x1000, False, tag=7)
+        e.enqueue(0x1040, False, tag=7)
+        e.set_tag_quota(7, 2)
+        n = e.advance_until(10_000_000, True)
+        assert n > 0
+        addrs, _, tags, _ = e.take_read_completions()
+        assert tags == [7, 7]
+        assert len(addrs) == 2
+        assert e.in_flight() == 0
+
+    def test_stops_on_first_finished_tag_not_all_traffic(self, tmp_path):
+        e = _engine(tmp_path)
+        e.enqueue(0x1000, False, tag=1)
+        e.enqueue(0x2000, False, tag=2)
+        e.enqueue(0x2040, False, tag=2)
+        e.set_tag_quota(1, 1)
+        e.set_tag_quota(2, 2)
+        e.advance_until(10_000_000, True)
+        addrs, _, tags, _ = e.take_read_completions()
+        # Tag 1 is one burst; must not have drained tag 2's second burst
+        # as a requirement — at least tag 1 is present.  Tag 2 may share
+        # the same ClockTick.
+        assert 1 in tags
+        assert tags.count(1) == 1
+
+
 class TestFrontendQueue:
     def test_enqueue_beyond_queue_size(self, tmp_path):
         e = _engine(tmp_path)

@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.4.1] - 2026-08-25
 
-- README and package blurbs describe the discrete-event `Memory` host
-  (cycle-driven `MemoryController` pointed at branch `0.3.0`).
+### Added
+
+- `Memory.set_tag_quota(tag, remaining)` and `Memory.advance_until(target, stop_on_tag_done=True)`:
+  C++ ticks until a logical request (all bursts sharing a tag) completes,
+  or until a host deadline.  DES hosts can issue chained traffic at the
+  completion timestamp without a Python wakeup per burst.
+  `target=None` means no deadline (stop on tag-done or idle).
+  `SimEngine.set_tag_quota` / `advance_until` expose the same primitive.
 
 ## [0.4.0] - 2026-08-25
 

@@ -222,6 +222,32 @@ class Memory:
         pending.extend(self.pull())
         return pending
 
+    def set_tag_quota(self, tag: int, remaining: int) -> None:
+        """Remaining bursts for a logical request.  ``remaining=0`` clears it.
+
+        ``advance_until(..., stop_on_tag_done=True)`` returns when any
+        quota hits zero so the host can issue follow-up requests.
+        """
+        self._engine.set_tag_quota(int(tag), int(remaining))
+
+    def advance_until(
+        self,
+        target_cycle: int | None = None,
+        *,
+        stop_on_tag_done: bool = True,
+    ) -> list[Completion]:
+        """Tick until *target_cycle*, or until a tag quota hits zero.
+
+        ``target_cycle=None`` means no deadline: stop on tag-done or idle.
+        Completions already queued are returned first without ticking.
+        """
+        pending = self.pull()
+        if pending:
+            return pending
+        target = (1 << 64) - 1 if target_cycle is None else int(target_cycle)
+        self._engine.advance_until(target, stop_on_tag_done)
+        return self.pull()
+
     def drain(self, max_cycles: int = 10_000_000) -> list[Completion]:
         """Tick until nothing is in flight (controller + frontend queue).
 

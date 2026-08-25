@@ -1,5 +1,7 @@
 #include "sim_engine.hpp"
 
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -175,6 +177,53 @@ uint64_t SimEngine::advanceTo(uint64_t target_cycle, bool stop_on_completion) {
   return n;
 }
 
+void SimEngine::setTagQuota(uint64_t tag, uint64_t remaining) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (remaining == 0) {
+    tag_quota_.erase(tag);
+    return;
+  }
+  tag_quota_[tag] = remaining;
+}
+
+void SimEngine::noteTagLocked(uint64_t tag) {
+  auto it = tag_quota_.find(tag);
+  if (it == tag_quota_.end()) {
+    return;
+  }
+  if (it->second > 0) {
+    --it->second;
+  }
+  if (it->second == 0) {
+    tag_done_ = true;
+    tag_quota_.erase(it);
+  }
+}
+
+uint64_t SimEngine::advanceUntil(uint64_t target_cycle, bool stop_on_tag_done) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  tag_done_ = false;
+  uint64_t n = 0;
+  const bool bounded = target_cycle != std::numeric_limits<uint64_t>::max();
+  while (true) {
+    if (bounded && cycle_ >= target_cycle) {
+      break;
+    }
+    if (!bounded && inFlightLocked() == 0) {
+      break;
+    }
+    if (stop_on_tag_done && tag_done_) {
+      break;
+    }
+    tickOnceLocked();
+    ++n;
+    if (stop_on_tag_done && tag_done_) {
+      break;
+    }
+  }
+  return n;
+}
+
 uint64_t SimEngine::frontendSize() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return static_cast<uint64_t>(frontend_.size());
@@ -316,6 +365,7 @@ void SimEngine::onReadComplete(uint64_t addr) {
     }
     --num_outstanding_reads_;
     ++completion_count_;
+    noteTagLocked(tag);
     collect(addr, submit_cycle, tag, false);
   }
 }
@@ -331,6 +381,7 @@ void SimEngine::onWriteComplete(uint64_t addr) {
     }
     --num_outstanding_writes_;
     ++completion_count_;
+    noteTagLocked(tag);
     collect(addr, submit_cycle, tag, true);
   }
 }

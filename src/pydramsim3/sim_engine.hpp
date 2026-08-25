@@ -72,6 +72,16 @@ class SimEngine {
   // completion.  Returns cycles executed.
   uint64_t advanceTo(uint64_t target_cycle, bool stop_on_completion);
 
+  // Tick until current_cycle >= target_cycle.  If stop_on_tag_done and a
+  // tag quota (setTagQuota) reaches zero, return at that ClockTick so
+  // the host can issue follow-up requests.  target_cycle == UINT64_MAX
+  // means no deadline: stop on tag-done or idle.
+  uint64_t advanceUntil(uint64_t target_cycle, bool stop_on_tag_done);
+
+  // Remaining bursts for a host-side logical request.  Completions with
+  // this tag decrement the quota; hitting zero trips stop_on_tag_done.
+  void setTagQuota(uint64_t tag, uint64_t remaining);
+
   // Always-succeeding submit: park on a software frontend queue when the
   // controller will not accept, and drain into DRAMsim3 on later ticks.
   // Latency is measured from this enqueue's issue cycle (queue wait is
@@ -158,6 +168,7 @@ class SimEngine {
   // Advances one cycle; assumes mutex_ is held.
   void tickOnceLocked();
   uint64_t inFlightLocked() const;
+  void noteTagLocked(uint64_t tag);
 
   std::unique_ptr<dramsim3::MemorySystem> dramsim_;
 
@@ -177,6 +188,10 @@ class SimEngine {
   bool collect_events_ = true;
   std::vector<CompletionEvent> events_;
   uint64_t completion_count_ = 0;
+
+  // Host logical-request quotas: tag -> remaining bursts.
+  std::unordered_map<uint64_t, uint64_t> tag_quota_;
+  bool tag_done_ = false;
 
   // Software frontend: always-succeeding enqueue for DES hosts.
   std::deque<PendingTxn> frontend_;

@@ -39,7 +39,7 @@ Sdists are on
 [GitHub Releases](https://github.com/chenshih1/pydramsim3/releases):
 
 ```bash
-pip install pydramsim3-0.4.0.tar.gz
+pip install pydramsim3-0.4.1.tar.gz
 ```
 
 Release builds use LTO and link DRAMsim3 statically.  CI is Linux; any
@@ -78,6 +78,8 @@ temporary directory removed on `close()` / `with` / GC.
 | `submit(addr, is_write, tag=None)` | Issue one burst.  Returns a tag.  Check `is not None` — tag `0` is valid. |
 | `wait()` | Tick in C++ until the next completion (or idle). |
 | `advance_to(t)` | Tick to a host deadline; default `stop_on_completion=True`. |
+| `advance_until(t, stop_on_tag_done=True)` | Tick to a deadline, or until a `set_tag_quota` counter hits zero. `t=None` means no deadline. |
+| `set_tag_quota(tag, n)` | Remaining bursts for a logical request. Completions decrement it. |
 | `pull()` | Return completions already collected (no ticking). |
 | `drain()` | Tick until controller and frontend are idle. |
 | `completions()` | `wait` until idle, yield each `Completion`. |

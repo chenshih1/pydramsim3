@@ -84,6 +84,15 @@ PYBIND11_MODULE(_dramsim3, m) {
            py::call_guard<py::gil_scoped_release>(),
            "Tick until current_cycle reaches target_cycle; optionally stop "
            "at the first new completion.  Returns cycles used.")
+      .def("advance_until", &SimEngine::advanceUntil, py::arg("target_cycle"),
+           py::arg("stop_on_tag_done") = true,
+           py::call_guard<py::gil_scoped_release>(),
+           "Tick until target_cycle (UINT64_MAX = no deadline).  With "
+           "stop_on_tag_done, return when a set_tag_quota counter hits "
+           "zero so the host can issue follow-up requests.")
+      .def("set_tag_quota", &SimEngine::setTagQuota, py::arg("tag"),
+           py::arg("remaining"),
+           "Remaining bursts for a logical request tag; 0 clears it.")
       .def("enqueue", &SimEngine::enqueue, py::arg("addr"),
            py::arg("is_write"), py::arg("tag") = 0,
            "Always-succeeding submit: park on a frontend queue if the "
