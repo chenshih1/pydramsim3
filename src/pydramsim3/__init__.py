@@ -1,35 +1,32 @@
 """PyDRAMsim3 — Python bindings for the DRAMsim3 cycle-accurate memory simulator.
 
-The public entry point is :class:`MemoryController`, a gem5-aligned DRAM
-controller with flow control, outstanding tracking, and per-transaction
-latency.  The C++ engine (:mod:`pydramsim3._dramsim3.SimEngine`) is an
-internal implementation detail: the hot loop lives there, with bulk event
-export and numpy trace driving for maximum throughput.
+:class:`Memory` is the host API: ``submit``, then ``wait`` / ``advance_to``
+/ ``drain``.  Python wakes on completions; DRAMsim3 still runs
+cycle-accurately in C++.
+
+The C++ engine (:mod:`pydramsim3._dramsim3.SimEngine`) owns the hot loop:
+batched ticks, frontend queue, bulk event export, numpy trace driving.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .controller import Completion, MemoryController, RequestType
+from .memory import Completion, Memory, RequestType
 from .tracker import LatencyStats, LatencyTracker
 
 __all__ = [
     "Completion",
     "LatencyStats",
     "LatencyTracker",
-    "MemoryController",
+    "Memory",
     "RequestType",
     "configs_dir",
     "list_configs",
+    "resolve_config",
 ]
 
-__version__ = "0.3.0"
-
-
-# ---------------------------------------------------------------------------
-# Config discovery
-# ---------------------------------------------------------------------------
+__version__ = "0.4.0"
 
 
 def configs_dir() -> Path:
@@ -43,9 +40,22 @@ def configs_dir() -> Path:
 def list_configs() -> list[str]:
     """List available config file stems (e.g. ``'DDR4_8Gb_x8_2400'``).
 
-    Use these names with :meth:`MemoryController.from_config`.
+    Use these names with :meth:`Memory.from_config`.
     """
     cfg = configs_dir()
     if not cfg.is_dir():
         return []
     return sorted(p.stem for p in cfg.glob("*.ini"))
+
+
+def resolve_config(config_name: str) -> Path:
+    """Return the path to a bundled DRAMsim3 ``.ini`` (stem or filename)."""
+    name = config_name if config_name.endswith(".ini") else f"{config_name}.ini"
+    config_path = configs_dir() / name
+    if not config_path.exists():
+        available = ", ".join(list_configs()[:10])
+        raise FileNotFoundError(
+            f"Config '{config_name}' not found in {configs_dir()}. "
+            f"Available configs include: {available}..."
+        )
+    return config_path

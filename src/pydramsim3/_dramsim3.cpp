@@ -13,16 +13,17 @@ namespace py = pybind11;
 using U64Array = py::array_t<uint64_t, py::array::c_style | py::array::forcecast>;
 using BoolArray = py::array_t<bool, py::array::c_style | py::array::forcecast>;
 
-// Export a (addrs, lats, tags) event buffer as numpy arrays and clear it.
-static py::tuple takeEventsNp(
+static py::tuple takeCompletionsNp(
     const std::tuple<std::vector<uint64_t>, std::vector<uint64_t>,
-                     std::vector<uint64_t>>& events) {
+                     std::vector<uint64_t>, std::vector<uint64_t>>& events) {
   const auto& addrs_v = std::get<0>(events);
   const auto& lats_v = std::get<1>(events);
   const auto& tags_v = std::get<2>(events);
+  const auto& cycles_v = std::get<3>(events);
   py::array_t<uint64_t> addrs(addrs_v.size());
   py::array_t<uint64_t> lats(lats_v.size());
   py::array_t<uint64_t> tags(tags_v.size());
+  py::array_t<uint64_t> cycles(cycles_v.size());
   if (!addrs_v.empty()) {
     std::memcpy(addrs.mutable_data(), addrs_v.data(),
                 addrs_v.size() * sizeof(uint64_t));
@@ -30,8 +31,10 @@ static py::tuple takeEventsNp(
                 lats_v.size() * sizeof(uint64_t));
     std::memcpy(tags.mutable_data(), tags_v.data(),
                 tags_v.size() * sizeof(uint64_t));
+    std::memcpy(cycles.mutable_data(), cycles_v.data(),
+                cycles_v.size() * sizeof(uint64_t));
   }
-  return py::make_tuple(addrs, lats, tags);
+  return py::make_tuple(addrs, lats, tags, cycles);
 }
 
 PYBIND11_MODULE(_dramsim3, m) {
@@ -39,9 +42,8 @@ PYBIND11_MODULE(_dramsim3, m) {
 
   // High-performance engine: the hot loop (submission, backpressure waits,
   // batching, outstanding tracking, per-transaction latency) lives entirely
-  // in C++.  Completion events are exported in bulk as (addr, latency)
-  // pairs via take_read_events()/take_write_events().  tick()/drain()/
-  // tick_until_capacity()/run_trace() release the GIL while running.
+  // in C++.  Completions are exported in bulk via take_completions().
+  // tick()/drain()/tick_until_capacity()/run_trace() release the GIL.
   py::class_<SimEngine>(m, "SimEngine")
       .def(py::init<const std::string&, const std::string&, bool>(),
            py::arg("config_file"), py::arg("working_dir"),
@@ -66,13 +68,28 @@ PYBIND11_MODULE(_dramsim3, m) {
           "Advance *cycles* clock cycles; returns cycles advanced.")
       .def("drain", &SimEngine::drain, py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
-           "Tick until no transactions are outstanding; returns cycles used.")
+           "Tick until controller and frontend are idle; returns cycles used.")
       .def("tick_until_capacity", &SimEngine::tickUntilCapacity,
            py::arg("addr"), py::arg("is_write"),
            py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
-           "Tick until the next try_enqueue(addr, is_write) can succeed; "
+           "Tick until DRAMsim3 will accept try_enqueue(addr, is_write); "
            "returns cycles used.")
+      .def("tick_until_completion", &SimEngine::tickUntilCompletion,
+           py::arg("max_cycles") = 10000000,
+           py::call_guard<py::gil_scoped_release>(),
+           "Tick until the next read or write completion; returns cycles used.")
+      .def("advance_to", &SimEngine::advanceTo, py::arg("target_cycle"),
+           py::arg("stop_on_completion") = true,
+           py::call_guard<py::gil_scoped_release>(),
+           "Tick until current_cycle reaches target_cycle; optionally stop "
+           "at the first new completion.  Returns cycles used.")
+      .def("enqueue", &SimEngine::enqueue, py::arg("addr"),
+           py::arg("is_write"), py::arg("tag") = 0,
+           "Always-succeeding submit: park on a frontend queue if the "
+           "controller is full.  Latency is measured from this call.")
+      .def("frontend_size", &SimEngine::frontendSize,
+           "Number of transactions waiting on the software frontend queue.")
       .def(
           "run_trace",
           [](SimEngine& self, U64Array addrs, BoolArray writes,
@@ -94,25 +111,32 @@ PYBIND11_MODULE(_dramsim3, m) {
           "C-contiguous; the GIL is released for the whole run.")
       .def("set_collect", &SimEngine::setCollect, py::arg("collect"),
            "Enable/disable completion-event collection.")
-      .def("take_read_events", &SimEngine::takeReadEvents,
-           "Return and clear collected (addr, latency, tag) read "
+      .def("take_read_completions", &SimEngine::takeReadCompletions,
+           "Return and clear (addr, latency, tag, complete_cycle) read "
            "completions as Python lists.")
-      .def("take_write_events", &SimEngine::takeWriteEvents,
-           "Return and clear collected (addr, latency, tag) write "
+      .def("take_write_completions", &SimEngine::takeWriteCompletions,
+           "Return and clear (addr, latency, tag, complete_cycle) write "
            "completions as Python lists.")
       .def(
-          "take_read_events_np",
-          [](SimEngine& self) { return takeEventsNp(self.takeReadEvents()); },
-          "Return and clear collected (addr, latency, tag) read "
-          "completions as numpy arrays.")
-      .def(
-          "take_write_events_np",
+          "take_read_completions_np",
           [](SimEngine& self) {
-            return takeEventsNp(self.takeWriteEvents());
+            return takeCompletionsNp(self.takeReadCompletions());
           },
-          "Return and clear collected (addr, latency, tag) write "
+          "Return and clear (addr, latency, tag, complete_cycle) read "
           "completions as numpy arrays.")
+      .def(
+          "take_write_completions_np",
+          [](SimEngine& self) {
+            return takeCompletionsNp(self.takeWriteCompletions());
+          },
+          "Return and clear (addr, latency, tag, complete_cycle) write "
+          "completions as numpy arrays.")
+      .def("take_completions", &SimEngine::takeCompletions,
+           "Return and clear all completions in callback order as "
+           "(addr, latency, tag, complete_cycle, is_write) lists.")
       .def("num_outstanding", &SimEngine::numOutstanding)
+      .def("in_flight", &SimEngine::inFlight,
+           "DRAMsim3 outstanding plus frontend queue depth.")
       .def("num_outstanding_reads", &SimEngine::numOutstandingReads)
       .def("num_outstanding_writes", &SimEngine::numOutstandingWrites)
       .def_property_readonly("current_cycle", &SimEngine::currentCycle,

@@ -29,6 +29,7 @@ snake_case and the C++ names camelCase, one-to-one.
 ```bash
 .venv/bin/ruff check .            # lint
 .venv/bin/ruff format --check .   # formatting
+.venv/bin/mypy src/pydramsim3/    # types (CI also runs this)
 .venv/bin/python -m pytest        # tests
 ```
 

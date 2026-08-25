@@ -1,8 +1,12 @@
-"""Latency collection and percentile reporting for MemoryController."""
+"""Latency collection and percentile reporting."""
 
 from __future__ import annotations
 
-__all__ = ["LatencyTracker"]
+from collections.abc import Iterable
+
+from .memory import Completion
+
+__all__ = ["LatencyStats", "LatencyTracker"]
 
 
 class LatencyStats:
@@ -81,17 +85,15 @@ class LatencyStats:
 
 
 class LatencyTracker:
-    """Collects per-transaction latencies from MemoryController callbacks.
+    """Collects per-transaction latencies from :class:`~pydramsim3.memory.Completion` events.
 
     Usage::
 
         tracker = LatencyTracker()
-        mc = MemoryController.from_config(
-            "DDR4_8Gb_x8_2400",
-            read_complete=tracker.on_read,
-            write_complete=tracker.on_write,
-        )
-        mc.replay(trace)
+        mem = Memory.from_config("DDR4_8Gb_x8_2400")
+        for addr, is_write in trace:
+            mem.submit(addr, is_write)
+        tracker.add(mem.drain())
 
         print(tracker.read_stats.avg)
         print(tracker.read_stats.p99)
@@ -107,15 +109,14 @@ class LatencyTracker:
         self._write_stats: LatencyStats | None = None
         self._all_stats: LatencyStats | None = None
 
-    def on_read(self, addr: int, latency: int) -> None:
-        """Callback for ``MemoryController(read_complete=...)``."""
-        self._read_latencies.append(latency)
+    def add(self, completions: Iterable[Completion]) -> None:
+        """Record latencies from a batch of completions."""
+        for c in completions:
+            if c.is_write:
+                self._write_latencies.append(c.latency)
+            else:
+                self._read_latencies.append(c.latency)
         self._read_stats = None
-        self._all_stats = None
-
-    def on_write(self, addr: int, latency: int) -> None:
-        """Callback for ``MemoryController(write_complete=...)``."""
-        self._write_latencies.append(latency)
         self._write_stats = None
         self._all_stats = None
 

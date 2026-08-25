@@ -2,7 +2,7 @@
 """Throughput benchmark for pydramsim3.
 
 Measures transactions/second for the Python-loop ``replay()`` path vs the
-zero-copy numpy ``run_trace()`` path, with and without callback collection.
+zero-copy numpy ``run_trace()`` path.
 
 Run::
 
@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from pydramsim3 import LatencyTracker, MemoryController
+from pydramsim3 import LatencyTracker, Memory
 
 N = 100_000
 
@@ -37,24 +37,22 @@ def bench(label: str, fn) -> None:
 def main() -> None:
     addrs, writes = make_trace(N)
     with tempfile.TemporaryDirectory() as d:
-        mc = MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=d)
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=d)
         trace = [(int(a), bool(w)) for a, w in zip(addrs, writes)]
-        bench("replay (Python loop)", lambda: mc.replay(trace))
+        bench("replay (Python loop)", lambda: mem.replay(trace))
 
-        mc2 = MemoryController.from_config("DDR4_8Gb_x8_2400", working_dir=d)
-        bench("run_trace (numpy)", lambda: mc2.run_trace(addrs, writes))
+        mem2 = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=d)
+        bench("run_trace (numpy)", lambda: mem2.run_trace(addrs, writes))
 
         tracker = LatencyTracker()
-        mc3 = MemoryController.from_config(
-            "DDR4_8Gb_x8_2400",
-            working_dir=d,
-            read_complete=tracker.on_read,
-            write_complete=tracker.on_write,
-        )
-        bench(
-            "run_trace + tracker",
-            lambda: mc3.run_trace(addrs, writes),
-        )
+        mem3 = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=d)
+
+        def run_traced():
+            cycles = mem3.run_trace(addrs, writes)
+            tracker.add(mem3.pull())
+            return cycles
+
+        bench("run_trace + tracker", run_traced)
         assert tracker.num_reads + tracker.num_writes == N
 
 

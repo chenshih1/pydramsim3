@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 """Example: simulating a hardware accelerator's memory traffic with DRAMsim3.
 
-This script models a simplified matrix-multiply accelerator that loads
-tiles of a weight matrix from DRAM, computes locally, and writes back
-partial results.  It demonstrates:
-
-  - MemoryController with gem5-style flow control (submit / backpressure / retry)
-  - LatencyTracker for percentile reporting
-  - replay() for trace-driven simulation with automatic backpressure
-  - logging for progress visibility (set level to DEBUG for backpressure detail)
-  - Using ``get_stats()`` for authoritative DRAMsim3 internal stats
+Demonstrates the event-driven ``Memory`` API: submit a trace, then ``drain``
+and read ``Completion.latency`` / ``Completion.cycle``.
 """
 
 from __future__ import annotations
@@ -53,70 +46,47 @@ def build_trace(burst_size: int) -> list[tuple[int, bool]]:
     return trace
 
 
-def report_dramsim3_stats(stats: dict) -> None:
-    """Print DRAMsim3 internal stats."""
-    ch0 = stats["0"]
-    logger.info(
-        "DRAMsim3: reads=%d writes=%d avg_read_lat=%.1f energy=%.0f pJ",
-        ch0["num_reads_done"],
-        ch0["num_writes_done"],
-        ch0["average_read_latency"],
-        ch0["total_energy"],
-    )
-    reads = ch0["num_reads_done"]
-    if reads:
-        logger.info(
-            "DRAMsim3: read row hits %d/%d (%.1f%%)",
-            ch0["num_read_row_hits"],
-            reads,
-            100 * ch0["num_read_row_hits"] / reads,
-        )
-
-
 def run_simulation() -> None:
     logger.info("Config: %s, tiles: %d, tile size: %d B", DRAM_CONFIG, NUM_TILES, TILE_SIZE)
 
-    tracker = pydramsim3.LatencyTracker()
-
-    with tempfile.TemporaryDirectory(
-        prefix="dramsim3_"
-    ) as output_dir, pydramsim3.MemoryController.from_config(
-        DRAM_CONFIG,
-        working_dir=output_dir,
-        read_complete=tracker.on_read,
-        write_complete=tracker.on_write,
-    ) as mc:
+    with tempfile.TemporaryDirectory(prefix="dramsim3_") as output_dir:
+        mem = pydramsim3.Memory.from_config(DRAM_CONFIG, working_dir=output_dir)
         logger.info(
-            "Clock: %.2f ns, queue: %d, burst: %d B", mc.clock_period, mc.queue_size, mc.burst_size
+            "Clock: %.2f ns, queue: %d, burst: %d B",
+            mem.clock_period,
+            mem.queue_size,
+            mem.burst_size,
         )
 
-        trace = build_trace(mc.burst_size)
+        trace = build_trace(mem.burst_size)
         logger.info(
             "Trace: %d transactions (%d reads + %d writes)",
             len(trace),
-            NUM_TILES * (TILE_SIZE // mc.burst_size),
-            NUM_TILES * (TILE_SIZE // mc.burst_size),
+            NUM_TILES * (TILE_SIZE // mem.burst_size),
+            NUM_TILES * (TILE_SIZE // mem.burst_size),
         )
 
-        total_cycles = mc.replay(trace)
+        for addr, is_write in trace:
+            mem.submit(addr, is_write)
+        evs = mem.drain()
+        reads = [e.latency for e in evs if not e.is_write]
+        writes = [e.latency for e in evs if e.is_write]
 
-        logger.info("Done: %d cycles, %s", total_cycles, tracker.summary())
-        logger.info(
-            "Read  latency: avg=%.1f p50=%d p90=%d p99=%d max=%d",
-            tracker.read_stats.avg,
-            tracker.read_stats.p50,
-            tracker.read_stats.p90,
-            tracker.read_stats.p99,
-            tracker.read_stats.max,
-        )
-        logger.info(
-            "Write latency: avg=%.1f p50=%d p99=%d",
-            tracker.write_stats.avg,
-            tracker.write_stats.p50,
-            tracker.write_stats.p99,
-        )
-
-        report_dramsim3_stats(mc.get_stats())
+        logger.info("Done: %d cycles, %d completions", mem.current_cycle, len(evs))
+        if reads:
+            logger.info(
+                "Read  latency: avg=%.1f min=%d max=%d",
+                sum(reads) / len(reads),
+                min(reads),
+                max(reads),
+            )
+        if writes:
+            logger.info(
+                "Write latency: avg=%.1f min=%d max=%d",
+                sum(writes) / len(writes),
+                min(writes),
+                max(writes),
+            )
 
 
 if __name__ == "__main__":

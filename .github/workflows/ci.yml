@@ -71,12 +71,12 @@ jobs:
           import tempfile
           import numpy as np
           import pydramsim3
-          mc = pydramsim3.MemoryController.from_config(
+          mem = pydramsim3.Memory.from_config(
               "DDR4_8Gb_x8_2400", working_dir=tempfile.mkdtemp())
           addrs = (0x1000 + np.arange(100) * 64).astype(np.uint64)
           writes = np.arange(100) % 2 == 1
-          cycles = mc.run_trace(addrs, writes)
-          assert cycles > 0 and mc.num_outstanding == 0
+          cycles = mem.run_trace(addrs, writes)
+          assert cycles > 0 and mem.num_outstanding == 0
           print("sdist install OK:", cycles, "cycles")
           EOF
       - name: Size check
