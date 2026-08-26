@@ -23,7 +23,7 @@ __all__ = [
     "resolve_config",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.4.4"
 
 
 def configs_dir() -> Path:

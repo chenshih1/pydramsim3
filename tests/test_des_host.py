@@ -153,6 +153,129 @@ class TestFrontendQueue:
         assert e.num_outstanding_reads() == 1
         assert e.frontend_size() > 0
 
+    def test_enqueue_range_matches_repeated_enqueue(self, tmp_path):
+        def drain_tags(use_range):
+            e = _engine(tmp_path)
+            if use_range:
+                e.enqueue_range(0x1000, 24, 64, False, tag=3)
+            else:
+                for i in range(24):
+                    e.enqueue(0x1000 + i * 64, False, tag=3)
+            e.drain()
+            addrs, _, tags, cycles = e.take_read_completions()
+            return list(addrs), list(tags), list(cycles)
+
+        assert drain_tags(True) == drain_tags(False)
+
+    def test_advance_by_matches_advance_until(self, tmp_path):
+        e = _engine(tmp_path)
+        e.enqueue(0x1000, False, tag=1)
+        n = e.advance_by(10_000, True)
+        addrs, _, tags, cycles = e.take_read_completions()
+        e2 = _engine(tmp_path)
+        e2.enqueue(0x1000, False, tag=1)
+        n2 = e2.advance_until(e2.current_cycle + 10_000, True)
+        addrs2, _, tags2, cycles2 = e2.take_read_completions()
+        assert n == n2
+        assert addrs == addrs2
+        assert tags == tags2
+        assert cycles == cycles2
+
+    def test_hbm_full_channel_does_not_stall_other(self, tmp_path):
+        cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
+        e = SimEngine(cfg, str(tmp_path), True)
+        # 8 channels * queue_size reads, plus overflow to park on the frontend.
+        n = 8 * e.queue_size + 64
+        e.enqueue_range(0x1000, n, 64, False, tag=1)
+        parked = e.frontend_size()
+        assert parked > 0
+        # Write queue is independent of a full read queue.  The write
+        # address must not alias an in-flight read: DRAMSim3 deadlocks
+        # if a posted write shares a pending read's address.
+        wr = 0x1000 + n * 64 + (1 << 20)
+        e.enqueue(wr, True, tag=9999)
+        assert e.num_outstanding_writes() == 1
+        assert e.frontend_size() == parked
+
+    def test_many_parked_reads_all_complete(self, tmp_path):
+        cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
+        e = SimEngine(cfg, str(tmp_path), True)
+        n = 4096
+        e.enqueue_range(0x1000, n, 64, False, tag=1)
+        e.set_tag_quota(1, n)
+        e.drain()
+        addrs, _, tags, _ = e.take_read_completions()
+        assert len(addrs) == n
+        assert tags == [1] * n
+        assert e.frontend_size() == 0
+        assert e.in_flight() == 0
+
+    def test_outstanding_cap_blocks_then_partial_range(self, tmp_path):
+        e = _engine(tmp_path)
+        cap = e.queue_size
+        e.set_outstanding_cap(cap)
+        assert e.outstanding_cap() == cap
+        parked = e.enqueue_range(0x1000, cap + 40, 64, False, tag=1)
+        assert parked == cap
+        assert e.in_flight() == cap
+        assert e.enqueue(0x9000, False, tag=99) is False
+        extra = e.enqueue_range(0x2000, 16, 64, False, tag=2)
+        assert extra == 0
+        e.drain()
+        addrs, _, tags, _ = e.take_read_completions()
+        assert len(addrs) == cap
+        assert tags == [1] * cap
+        parked2 = e.enqueue_range(0x2000, 16, 64, False, tag=2)
+        assert parked2 == 16
+        e.drain()
+        addrs, _, tags, _ = e.take_read_completions()
+        assert tags == [2] * 16
+
+    def test_read_then_full_write_buffer_does_not_deadlock(self, tmp_path):
+        """Posted writes must not starve a same-address in-flight read.
+
+        DRAMSim3 fills a per-channel write buffer of trans_queue_size and
+        then only drains writes.  A head write to an addr with pending_rd
+        aborts that drain, so the read never issues.  The wrapper must
+        hold the aliasing write in the frontend until the read completes.
+        """
+        cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
+        e = SimEngine(cfg, str(tmp_path), True)
+        e.set_outstanding_cap(0)
+        addr = 0x1000
+        assert e.try_enqueue(addr, False, tag=1)
+        # 32 same-channel writes (stride 8KB keeps HBM channel bits fixed);
+        # the first aliases the in-flight read.
+        for i in range(32):
+            assert e.enqueue(addr + i * (1 << 13), True, tag=2)
+        assert e.num_outstanding_reads() == 1
+        assert e.frontend_blocked_writes() == 1
+        assert e.num_outstanding_writes() == 31
+        assert e.frontend_size() == 1
+        e.drain(1_000_000)
+        assert e.in_flight() == 0
+
+    def test_advance_until_in_flight_below(self, tmp_path):
+        e = _engine(tmp_path)
+        cap = e.queue_size
+        e.set_outstanding_cap(cap)
+        e.enqueue_range(0x1000, cap, 64, False, tag=1)
+        n = e.advance_until_in_flight_below(cap)
+        assert n > 0
+        assert e.in_flight() < cap
+
+    def test_outstanding_cap_keeps_hol_bypass(self, tmp_path):
+        """A global credit cap must not serialize already-queued channels."""
+        e = _engine(tmp_path)
+        n = e.queue_size + 8
+        e.set_outstanding_cap(n + 1)
+        for i in range(n):
+            e.enqueue(0x1000 + i * 64, True, tag=i)
+        assert e.enqueue(0x9000, False, tag=999)
+        e.tick(2)
+        assert e.num_outstanding_reads() == 1
+        assert e.frontend_size() > 0
+
 
 class TestMemoryApi:
     def test_des_loop_matches_tick_one(self, tmp_path):
@@ -174,6 +297,34 @@ class TestMemoryApi:
         assert mem.frontend_size > 0
         evs = mem.drain()
         assert len(evs) == mem.queue_size + 8
+
+    def test_submit_range(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
+        assert mem.submit_range(0x1000, 12, 64, False, tag=5) == 5
+        evs = mem.drain()
+        assert [e.tag for e in evs] == [5] * 12
+        assert [e.addr for e in evs] == [0x1000 + i * 64 for i in range(12)]
+
+    def test_hw_outstanding_cap_hbm1(self, tmp_path):
+        mem = Memory.from_config("HBM1_4Gb_x128", working_dir=str(tmp_path), outstanding_cap="hw")
+        assert mem.num_channels == 8
+        assert mem.queue_size == 32
+        assert mem.outstanding_cap == 8 * 32 + 8
+        n = mem.outstanding_cap + 64
+        assert mem.park_range(0x1000, n, 64, False, tag=1) == mem.outstanding_cap
+        assert mem.in_flight == mem.outstanding_cap
+        assert mem.submit(0x9000, False) is None
+        evs = mem.drain()
+        assert len(evs) == mem.outstanding_cap
+        assert mem.park_range(0x2000, 16, 64, False, tag=2) == 16
+        assert mem.drain()
+
+    def test_submit_range_none_when_cap_full(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), outstanding_cap=8)
+        assert mem.submit_range(0x1000, 8, 64, False, tag=1) == 1
+        assert mem.submit_range(0x2000, 4, 64, False, tag=2) is None
+        mem.drain()
+        assert mem.submit_range(0x2000, 4, 64, False, tag=2) == 2
 
     def test_no_frontend_independent_reject(self, tmp_path):
         mem = Memory.from_config(
@@ -222,8 +373,34 @@ class TestMemoryApi:
     def test_wait_timeout_raises(self, tmp_path):
         mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
         mem.submit(0x1000, False)
-        with pytest.raises(RuntimeError, match="wait"):
+        with pytest.raises(RuntimeError, match="in_flight=") as ei:
             mem.wait(max_cycles=1)
+        msg = str(ei.value)
+        assert msg.startswith("wait:")
+        assert "unmatched=" in msg
+
+    def test_unbounded_advance_until_caps(self, tmp_path):
+        cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
+        e = SimEngine(cfg, str(tmp_path), True)
+        assert e.try_enqueue(0x1000, False, tag=1)
+        n = e.advance_until((1 << 64) - 1, True, 5)
+        assert n == 5
+        assert e.in_flight() == 1
+        mem = Memory.from_config("HBM1_4Gb_x128", working_dir=str(tmp_path))
+        mem.submit(0x1000, False)
+        with pytest.raises(RuntimeError, match="advance_until"):
+            mem.advance_until(None, max_cycles=1)
+
+    def test_memory_size_and_channel_of(self, tmp_path):
+        mem = Memory.from_config("HBM1_4Gb_x128", working_dir=str(tmp_path))
+        assert mem.num_channels == 8
+        assert mem.memory_size == 8 * 512 * (1 << 20)
+        ch = mem.channel_of(0x1000)
+        assert 0 <= ch < 8
+        assert mem.will_accept(0x1000, False)
+        st = mem.debug_state()
+        assert st["in_flight"] == 0
+        assert st["unmatched_callbacks"] == 0
 
     def test_mixed_completion_order_matches_tick_one(self, tmp_path):
         def order_via_tick():

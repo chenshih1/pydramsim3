@@ -509,6 +509,15 @@ class TestMemoryStats:
         stats = mem.get_stats()
         assert stats["0"]["num_reads_done"] == 16
 
+    def test_get_stats_refresh_false_reuses_snapshot(self, mem):
+        a = mem.get_stats()
+        assert a["0"]["num_reads_done"] == 16
+        b = mem.get_stats(refresh=False)
+        assert a is b
+        c = mem.get_stats(refresh=True)
+        assert c is not a
+        assert mem.get_stats(refresh=False) is c
+
     def test_reset_stats(self, mem):
         mem.reset_stats()
         stats = mem.get_stats()

@@ -67,13 +67,19 @@ class Memory:
         directory is created and removed when :meth:`close` runs (also
         from ``with`` / garbage collection).
     frontend_queue:
-        If True (default), ``submit`` always succeeds and parks on a
-        software queue when the controller will not accept this
-        address/direction.  Latency includes that queue wait.  The
-        queue is unbounded: the host should ``wait`` / ``drain`` so it
-        does not grow without bound.  If False, ``submit`` returns
-        ``None`` when DRAMsim3 rejects this call; later calls are
-        independent.
+        If True (default), ``submit`` parks on a software queue when the
+        controller will not accept this address/direction.  Latency
+        includes that queue wait.  Queued requests still drain with
+        per-channel HOL bypass.  If False, ``submit`` returns ``None``
+        when DRAMsim3 rejects this call; later calls are independent.
+    outstanding_cap:
+        Finite in-flight window (DRAMsim3 outstanding + frontend), in
+        bursts.  ``None`` / ``0`` is unbounded.  ``"hw"`` is
+        ``channels * trans_queue_size + channels`` (one extra skid slot
+        per channel).  When the window is full, ``submit`` /
+        ``park_range`` refuse more traffic; the host must tick until a
+        completion frees a credit.  Does not change HOL bypass of
+        requests already queued.
     burst_size:
         If given, assert that it matches DRAMsim3's configured burst size.
     """
@@ -84,6 +90,7 @@ class Memory:
         working_dir: str | None = None,
         *,
         frontend_queue: bool = True,
+        outstanding_cap: int | str | None = None,
         burst_size: int | None = None,
     ) -> None:
         self._tmp: TemporaryDirectory | None = None
@@ -100,6 +107,8 @@ class Memory:
                 f"burst_size {burst_size} does not match DRAMsim3 "
                 f"configured burst size {self._engine.burst_size}"
             )
+        self.outstanding_cap = outstanding_cap
+        self._stats_cache: dict[str, Any] | None = None
 
     def close(self) -> None:
         """Release the engine, then delete a default temporary working_dir."""
@@ -136,6 +145,7 @@ class Memory:
         working_dir: str | None = None,
         *,
         frontend_queue: bool = True,
+        outstanding_cap: int | str | None = None,
         burst_size: int | None = None,
     ) -> Memory:
         """Create from a bundled config name (e.g. ``\"DDR4_8Gb_x8_2400\"``)."""
@@ -145,8 +155,17 @@ class Memory:
             str(resolve_config(config_name)),
             working_dir,
             frontend_queue=frontend_queue,
+            outstanding_cap=outstanding_cap,
             burst_size=burst_size,
         )
+
+    @staticmethod
+    def hw_outstanding_cap(num_channels: int, queue_size: int) -> int:
+        """MC depth for one direction plus one skid slot per channel.
+
+        HBM1 (8 channels, ``trans_queue_size=32``) is 264 bursts.
+        """
+        return int(num_channels) * int(queue_size) + int(num_channels)
 
     def submit(
         self,
@@ -156,8 +175,9 @@ class Memory:
     ) -> int | None:
         """Issue one burst.  Returns the request tag, or None if rejected.
 
-        With the default frontend queue the call always returns a tag.
-        Without it, returns None when DRAMsim3 will not accept this
+        With the default frontend queue the call returns a tag unless
+        ``outstanding_cap`` is full (then ``None``).  Without the
+        frontend, returns None when DRAMsim3 will not accept this
         address and direction (per-channel read/write queues); later
         calls are independent.
 
@@ -168,7 +188,8 @@ class Memory:
         req_tag = self._next_tag if tag is None else tag
         is_wr = bool(is_write)
         if self._frontend_queue:
-            self._engine.enqueue(addr, is_wr, req_tag)
+            if not self._engine.enqueue(addr, is_wr, req_tag):
+                return None
             if auto_tag:
                 self._next_tag += 1
             return req_tag
@@ -177,6 +198,111 @@ class Memory:
                 self._next_tag += 1
             return req_tag
         return None
+
+    def park_range(
+        self,
+        addr: int,
+        count: int,
+        stride: int,
+        is_write: bool | RequestType = False,
+        tag: int = 0,
+    ) -> int:
+        """Park up to *count* bursts.  Returns how many were parked.
+
+        With a frontend queue this is ``enqueue_range``: may park fewer
+        than *count* when ``outstanding_cap`` is full.  Without a
+        frontend, submits one-by-one until DRAMsim3 rejects.
+        """
+        if count < 0:
+            raise ValueError("count must be >= 0")
+        if count == 0:
+            return 0
+        is_wr = bool(is_write)
+        if self._frontend_queue:
+            return int(
+                self._engine.enqueue_range(int(addr), int(count), int(stride), is_wr, int(tag))
+            )
+        parked = 0
+        a = int(addr)
+        step = int(stride)
+        for _ in range(int(count)):
+            if not self._engine.try_enqueue(a, is_wr, int(tag)):
+                break
+            a += step
+            parked += 1
+        return parked
+
+    def submit_range(
+        self,
+        addr: int,
+        count: int,
+        stride: int,
+        is_write: bool | RequestType = False,
+        tag: int | None = None,
+    ) -> int | None:
+        """Issue *count* bursts at ``addr, addr+stride, ...``.
+
+        With the frontend queue this parks bursts then drains once
+        (same admission order as *count* :meth:`submit` calls with no
+        clock tick in between).  With ``outstanding_cap`` only bursts
+        that fit in the window are parked; returns ``None`` if none
+        could be parked.  Without a frontend, submits one-by-one and
+        returns ``None`` on the first rejection (already-accepted
+        bursts stay in the controller).
+        """
+        if count < 0:
+            raise ValueError("count must be >= 0")
+        auto_tag = tag is None
+        req_tag = self._next_tag if tag is None else tag
+        is_wr = bool(is_write)
+        if count == 0:
+            if auto_tag:
+                self._next_tag += 1
+            return req_tag
+        if self._frontend_queue:
+            parked = self.park_range(addr, count, stride, is_wr, req_tag)
+            if parked == 0 and count > 0:
+                return None
+            if auto_tag:
+                self._next_tag += 1
+            return req_tag
+        a = int(addr)
+        step = int(stride)
+        for _ in range(int(count)):
+            if not self._engine.try_enqueue(a, is_wr, req_tag):
+                return None
+            a += step
+        if auto_tag:
+            self._next_tag += 1
+        return req_tag
+
+    def _stall_detail(self) -> str:
+        st = self.debug_state()
+        return (
+            f"cycle={st['cycle']} in_flight={st['in_flight']} "
+            f"frontend={st['frontend']} rd={st['outstanding_reads']} "
+            f"wr={st['outstanding_writes']} unmatched={st['unmatched_callbacks']} "
+            f"blocked_wr={st['frontend_blocked_writes']}"
+        )
+
+    def debug_state(self) -> dict[str, int]:
+        """Snapshot for stall diagnosis (no ticking).
+
+        ``in_flight`` counts callback-tracked bursts plus the frontend.
+        Posted writes may still sit in DRAMsim3's write buffer after
+        ``in_flight`` drops; ``will_accept(addr, True)`` is False when
+        that per-channel buffer is full.
+        """
+        e = self._engine
+        return {
+            "cycle": int(e.current_cycle),
+            "in_flight": int(e.in_flight()),
+            "frontend": int(e.frontend_size()),
+            "outstanding_reads": int(e.num_outstanding_reads()),
+            "outstanding_writes": int(e.num_outstanding_writes()),
+            "unmatched_callbacks": int(e.unmatched_callbacks()),
+            "frontend_blocked_writes": int(e.frontend_blocked_writes()),
+        }
 
     def pull(self) -> list[Completion]:
         """Return and clear completions already collected (no ticking)."""
@@ -198,8 +324,7 @@ class Memory:
         evs = self.pull()
         if not evs and self.busy:
             raise RuntimeError(
-                f"wait: no completion after {max_cycles} cycles "
-                f"(outstanding={self.num_outstanding}, frontend={self.frontend_size})"
+                f"wait: no completion after {max_cycles} cycles ({self._stall_detail()})"
             )
         return evs
 
@@ -235,37 +360,92 @@ class Memory:
         target_cycle: int | None = None,
         *,
         stop_on_tag_done: bool = True,
+        max_cycles: int = 10_000_000,
     ) -> list[Completion]:
         """Tick until *target_cycle*, or until a tag quota hits zero.
 
-        ``target_cycle=None`` means no deadline: stop on tag-done or idle.
-        Completions already queued are returned first without ticking.
+        ``target_cycle=None`` means no deadline: stop on tag-done, idle,
+        or *max_cycles* (``0`` disables the cap).  Finite deadlines are
+        not limited by *max_cycles*.  Completions already queued are
+        returned first without ticking.  Raises ``RuntimeError`` if an
+        unbounded wait hits the cap with traffic still in flight.
         """
         pending = self.pull()
         if pending:
             return pending
         target = (1 << 64) - 1 if target_cycle is None else int(target_cycle)
-        self._engine.advance_until(target, stop_on_tag_done)
-        return self.pull()
+        self._engine.advance_until(target, stop_on_tag_done, int(max_cycles))
+        evs = self.pull()
+        if target_cycle is None and not evs and self.busy:
+            raise RuntimeError(
+                f"advance_until: no completion after {max_cycles} cycles ({self._stall_detail()})"
+            )
+        return evs
 
     def drain(self, max_cycles: int = 10_000_000) -> list[Completion]:
-        """Tick until nothing is in flight (controller + frontend queue).
+        """Tick until callback-tracked in-flight traffic is gone.
 
+        Posted writes may still occupy DRAMsim3 write buffers after this
+        returns; ``in_flight`` counts completions, not those buffers.
         Raises ``RuntimeError`` if still busy after *max_cycles*.
         """
         self._engine.drain(max_cycles)
         evs = self.pull()
         if self._engine.in_flight() != 0:
             raise RuntimeError(
-                f"drain: still busy after {max_cycles} cycles "
-                f"(outstanding={self.num_outstanding}, frontend={self.frontend_size})"
+                f"drain: still busy after {max_cycles} cycles ({self._stall_detail()})"
             )
         return evs
 
     @property
     def busy(self) -> bool:
-        """True if the controller or frontend still holds a transaction."""
+        """True if a burst is still awaiting a completion callback.
+
+        This is not "the DRAM controller is idle": DRAMsim3 posts write
+        completions one cycle after accept, while the write buffer may
+        still drain.  Use :meth:`will_accept` if you need queue occupancy.
+        """
         return self._engine.in_flight() > 0
+
+    @property
+    def in_flight(self) -> int:
+        """DRAMsim3 outstanding plus frontend queue depth."""
+        return int(self._engine.in_flight())
+
+    @property
+    def num_channels(self) -> int:
+        return int(self._engine.num_channels)
+
+    @property
+    def memory_size(self) -> int:
+        """Mapped address space in bytes (``channels * channel_size``)."""
+        return int(self._engine.memory_size)
+
+    def channel_of(self, addr: int) -> int:
+        """DRAMsim3 channel index for *addr* (same map as the controller)."""
+        return int(self._engine.channel_of(int(addr)))
+
+    def will_accept(self, addr: int, is_write: bool | RequestType) -> bool:
+        """Whether DRAMsim3 would accept this address and direction now."""
+        is_wr = bool(is_write)
+        return bool(self._engine.will_accept(int(addr), is_wr))
+
+    @property
+    def outstanding_cap(self) -> int:
+        """Finite in-flight window in bursts; 0 means unbounded."""
+        return int(self._engine.outstanding_cap())
+
+    @outstanding_cap.setter
+    def outstanding_cap(self, cap: int | str | None) -> None:
+        if cap is None or cap == 0 or cap == "none":
+            value = 0
+        elif cap == "hw":
+            value = self.hw_outstanding_cap(self.num_channels, self.queue_size)
+        else:
+            value = int(cap)
+            if value < 0:
+                raise ValueError("outstanding_cap must be >= 0")
+        self._engine.set_outstanding_cap(value)
 
     @property
     def frontend_size(self) -> int:
@@ -368,10 +548,7 @@ class Memory:
             max_drain_cycles=max_drain,
         )
         if max_drain != 0 and self.busy:
-            raise RuntimeError(
-                f"run_trace: still busy after drain "
-                f"(outstanding={self.num_outstanding}, frontend={self.frontend_size})"
-            )
+            raise RuntimeError(f"run_trace: still busy after drain ({self._stall_detail()})")
         return elapsed
 
     @property
@@ -386,10 +563,18 @@ class Memory:
         """Flush DRAMsim3 statistics to output files."""
         self._engine.print_stats()
 
-    def get_stats(self) -> dict[str, Any]:
-        """Return DRAMsim3 JSON statistics as a dict."""
+    def get_stats(self, *, refresh: bool = True) -> dict[str, Any]:
+        """Return DRAMsim3 JSON statistics as a dict.
+
+        Each ``refresh=True`` call asks DRAMsim3 to rewrite the JSON
+        (and can accumulate extra idle-cycle background energy).
+        ``refresh=False`` returns the last snapshot, flushing once if
+        nothing has been read yet.
+        """
         import json
 
+        if not refresh and self._stats_cache is not None:
+            return self._stats_cache
         self._engine.print_stats()
         path = self.stats_json_path
         if not path.exists():
@@ -397,7 +582,8 @@ class Memory:
                 f"DRAMsim3 stats file not found at {path}. "
                 f"Is working_dir ({self._working_dir}) writable?"
             )
-        return json.loads(path.read_text())
+        self._stats_cache = json.loads(path.read_text())
+        return self._stats_cache
 
     @property
     def stats(self) -> dict[str, Any]:

@@ -75,21 +75,55 @@ class SimEngine {
   // Tick until current_cycle >= target_cycle.  If stop_on_tag_done and a
   // tag quota (setTagQuota) reaches zero, return at that ClockTick so
   // the host can issue follow-up requests.  target_cycle == UINT64_MAX
-  // means no deadline: stop on tag-done or idle.
-  uint64_t advanceUntil(uint64_t target_cycle, bool stop_on_tag_done);
+  // means no deadline: stop on tag-done, idle, or max_cycles (0 = no
+  // cap).  A finite target_cycle is not limited by max_cycles (lockstep
+  // idle refresh must not stop early).
+  uint64_t advanceUntil(uint64_t target_cycle, bool stop_on_tag_done,
+                        uint64_t max_cycles);
+
+  // Tick up to *cycles* from now.  Same stop_on_tag_done rules as
+  // advanceUntil.  Returns cycles executed.
+  uint64_t advanceBy(uint64_t cycles, bool stop_on_tag_done);
 
   // Remaining bursts for a host-side logical request.  Completions with
   // this tag decrement the quota; hitting zero trips stop_on_tag_done.
   void setTagQuota(uint64_t tag, uint64_t remaining);
 
-  // Always-succeeding submit: park on a software frontend queue when the
-  // controller will not accept, and drain into DRAMsim3 on later ticks.
-  // Latency is measured from this enqueue's issue cycle (queue wait is
-  // included).  DES hosts should use this instead of tryEnqueue.
-  void enqueue(uint64_t addr, bool is_write, uint64_t tag);
+  // Park on a software frontend queue when the controller will not
+  // accept, and drain into DRAMsim3 on later ticks.  Latency is measured
+  // from this enqueue's issue cycle (queue wait is included).  DES hosts
+  // should use this instead of tryEnqueue.
+  //
+  // Returns false when outstanding_cap is set and in-flight is already
+  // at the cap (nothing parked).  With cap 0 (default) always succeeds.
+  bool enqueue(uint64_t addr, bool is_write, uint64_t tag);
+
+  // Park up to *count* consecutive bursts (addr, addr+stride, ...) then
+  // drain once.  Same admission order as that many enqueue() calls with
+  // no ClockTick in between.  Returns how many were parked (less than
+  // *count* when outstanding_cap is reached).
+  uint64_t enqueueRange(uint64_t addr, uint64_t count, uint64_t stride,
+                        bool is_write, uint64_t tag);
+
+  // Finite in-flight window (DRAMsim3 outstanding + frontend).  0 means
+  // unbounded parking.  Does not change per-channel HOL bypass of
+  // requests already queued.
+  void setOutstandingCap(uint64_t cap);
+  uint64_t outstandingCap() const;
+  int numChannels() const;
+  uint64_t memorySize() const;
+  int channelOf(uint64_t addr) const;
+  bool willAccept(uint64_t addr, bool is_write) const;
+  uint64_t unmatchedCallbacks() const;
+  uint64_t frontendBlockedWrites() const;
 
   // Transactions waiting on the frontend queue (not yet in DRAMsim3).
   uint64_t frontendSize() const;
+
+  // Tick until in-flight (controller + frontend) is below *cap*, idle,
+  // or max_cycles.  Returns cycles executed.  Used by DES hosts waiting
+  // for outstanding credit.
+  uint64_t advanceUntilInFlightBelow(uint64_t cap, uint64_t max_cycles);
 
   // Tick until no transactions are outstanding, up to max_cycles.
   // Returns the number of cycles executed (<= max_cycles).  Also drains
@@ -147,6 +181,7 @@ class SimEngine {
     bool is_write;
     uint64_t tag;
     uint64_t issue_cycle;
+    uint64_t seq;
   };
 
   void onReadComplete(uint64_t addr);
@@ -160,15 +195,26 @@ class SimEngine {
   bool tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
   bool admitLocked(uint64_t addr, bool is_write, uint64_t tag,
                    uint64_t issue_cycle);
+  bool readOutstandingLocked(uint64_t addr) const;
   // Push onto the frontend and try to drain; assumes mutex_ is held.
-  void enqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
+  // Returns false when the outstanding cap is full.
+  bool enqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
+  bool atCapLocked() const;
+  void parkLocked(uint64_t addr, bool is_write, uint64_t tag);
+  int bucketOf(uint64_t addr, bool is_write) const;
+  int channelOfLocked(uint64_t addr) const;
   // Move parked frontend transactions into DRAMsim3.  Per-channel
-  // blocking does not stall later requests to a free channel.
+  // blocking does not stall later requests to a free channel.  Only
+  // queue heads are tried (WillAccept is per channel and direction),
+  // admitted in global enqueue order.
   void drainFrontendLocked();
   // Advances one cycle; assumes mutex_ is held.
   void tickOnceLocked();
   uint64_t inFlightLocked() const;
+  uint64_t advanceUntilLocked(uint64_t target_cycle, bool stop_on_tag_done,
+                              uint64_t max_cycles);
   void noteTagLocked(uint64_t tag);
+  uint64_t frontendBlockedWritesLocked() const;
 
   std::unique_ptr<dramsim3::MemorySystem> dramsim_;
 
@@ -184,6 +230,7 @@ class SimEngine {
       outstanding_writes_;
   uint64_t num_outstanding_reads_ = 0;
   uint64_t num_outstanding_writes_ = 0;
+  uint64_t unmatched_callbacks_ = 0;
 
   bool collect_events_ = true;
   std::vector<CompletionEvent> events_;
@@ -193,12 +240,25 @@ class SimEngine {
   std::unordered_map<uint64_t, uint64_t> tag_quota_;
   bool tag_done_ = false;
 
-  // Software frontend: always-succeeding enqueue for DES hosts.
-  std::deque<PendingTxn> frontend_;
+  // Software frontend: one FIFO per (channel, read/write).  WillAccept
+  // is per-channel and per-direction, so a full scan of a global deque
+  // is equivalent to trying these heads in enqueue-seq order.
+  std::vector<std::deque<PendingTxn>> frontend_rw_;
+  uint64_t frontend_count_ = 0;
+  uint64_t enqueue_seq_ = 0;
+  int num_channels_ = 0;
+  int num_buckets_ = 0;
+  uint64_t memory_size_ = 0;
+  // Copied from the .ini via dramsim3::Config (same formula as
+  // BaseDRAMSystem::GetChannel).  Not a MemorySystem API patch.
+  int shift_bits_ = 0;
+  int ch_pos_ = 0;
+  uint64_t ch_mask_ = 0;
 
   double clock_period_;
   unsigned int queue_size_;
   unsigned int burst_size_;
+  uint64_t outstanding_cap_ = 0;
 
   mutable std::mutex mutex_;
 };

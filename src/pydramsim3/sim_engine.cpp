@@ -1,6 +1,10 @@
 #include "sim_engine.hpp"
 
+#include "configuration.h"
+
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <tuple>
@@ -37,6 +41,27 @@ SimEngine::SimEngine(const std::string& config_file,
     throw std::runtime_error("Failed to read DRAM burst parameters");
   }
   burst_size_ = static_cast<unsigned int>(bus) * static_cast<unsigned int>(burst) / 8;
+
+  // Channel map from the same .ini DRAMsim3 already parsed.  A second
+  // Config only reads mapping fields; it does not tick or write stats.
+  {
+    dramsim3::Config cfg(config_file, working_dir);
+    num_channels_ = cfg.channels;
+    shift_bits_ = cfg.shift_bits;
+    ch_pos_ = cfg.ch_pos;
+    ch_mask_ = cfg.ch_mask;
+    // channel_size is MB after Config::CalculateSize.
+    if (cfg.channel_size < 0 || cfg.channels < 0) {
+      throw std::runtime_error("Failed to read DRAM address-space size");
+    }
+    memory_size_ = static_cast<uint64_t>(cfg.channels) *
+                   static_cast<uint64_t>(cfg.channel_size) * (1ULL << 20);
+  }
+  if (num_channels_ <= 0) {
+    throw std::runtime_error("Failed to read DRAM channel count");
+  }
+  num_buckets_ = num_channels_ * 2;
+  frontend_rw_.assign(static_cast<size_t>(num_buckets_), {});
 }
 
 bool SimEngine::tryEnqueue(uint64_t addr, bool is_write, uint64_t tag) {
@@ -44,8 +69,20 @@ bool SimEngine::tryEnqueue(uint64_t addr, bool is_write, uint64_t tag) {
   return tryEnqueueLocked(addr, is_write, tag);
 }
 
+bool SimEngine::readOutstandingLocked(uint64_t addr) const {
+  return outstanding_reads_.find(addr) != outstanding_reads_.end();
+}
+
 bool SimEngine::admitLocked(uint64_t addr, bool is_write, uint64_t tag,
                             uint64_t issue_cycle) {
+  // DRAMsim3 deadlocks if a channel write buffer is full (or forced
+  // into write-drain) while its head write matches a pending read:
+  // ScheduleTransaction only considers writes, hits the R→W check,
+  // and never issues the read.  Keep the write in the frontend until
+  // that read completes (vendored DRAMsim3 stays unmodified).
+  if (is_write && readOutstandingLocked(addr)) {
+    return false;
+  }
   if (!dramsim_->AddTransaction(addr, is_write)) {
     return false;
   }
@@ -72,36 +109,176 @@ uint64_t SimEngine::tick(uint64_t cycles) {
 }
 
 void SimEngine::tickOnceLocked() {
-  drainFrontendLocked();
+  if (frontend_count_ > 0) {
+    drainFrontendLocked();
+  }
   dramsim_->ClockTick();
   ++cycle_;
-  drainFrontendLocked();
+  if (frontend_count_ > 0) {
+    drainFrontendLocked();
+  }
 }
 
-void SimEngine::enqueueLocked(uint64_t addr, bool is_write, uint64_t tag) {
-  frontend_.push_back(PendingTxn{addr, is_write, tag, cycle_});
-  drainFrontendLocked();
+int SimEngine::channelOfLocked(uint64_t addr) const {
+  return static_cast<int>((addr >> shift_bits_ >> ch_pos_) & ch_mask_);
 }
 
-void SimEngine::enqueue(uint64_t addr, bool is_write, uint64_t tag) {
+int SimEngine::bucketOf(uint64_t addr, bool is_write) const {
+  const int ch = channelOfLocked(addr);
+  if (ch < 0 || ch >= num_channels_) {
+    throw std::runtime_error("channel index out of range");
+  }
+  return ch * 2 + (is_write ? 1 : 0);
+}
+
+void SimEngine::parkLocked(uint64_t addr, bool is_write, uint64_t tag) {
+  frontend_rw_[static_cast<size_t>(bucketOf(addr, is_write))].push_back(
+      PendingTxn{addr, is_write, tag, cycle_, enqueue_seq_++});
+  ++frontend_count_;
+}
+
+bool SimEngine::atCapLocked() const {
+  return outstanding_cap_ > 0 && inFlightLocked() >= outstanding_cap_;
+}
+
+bool SimEngine::enqueueLocked(uint64_t addr, bool is_write, uint64_t tag) {
+  if (atCapLocked()) {
+    return false;
+  }
+  parkLocked(addr, is_write, tag);
+  drainFrontendLocked();
+  return true;
+}
+
+bool SimEngine::enqueue(uint64_t addr, bool is_write, uint64_t tag) {
   std::lock_guard<std::mutex> lock(mutex_);
-  enqueueLocked(addr, is_write, tag);
+  return enqueueLocked(addr, is_write, tag);
+}
+
+uint64_t SimEngine::enqueueRange(uint64_t addr, uint64_t count, uint64_t stride,
+                                 bool is_write, uint64_t tag) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  uint64_t parked = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    if (atCapLocked()) {
+      break;
+    }
+    parkLocked(addr, is_write, tag);
+    addr += stride;
+    ++parked;
+  }
+  if (parked > 0) {
+    drainFrontendLocked();
+  }
+  return parked;
+}
+
+void SimEngine::setOutstandingCap(uint64_t cap) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  outstanding_cap_ = cap;
+}
+
+uint64_t SimEngine::outstandingCap() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return outstanding_cap_;
+}
+
+int SimEngine::numChannels() const { return num_channels_; }
+
+uint64_t SimEngine::memorySize() const { return memory_size_; }
+
+int SimEngine::channelOf(uint64_t addr) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return channelOfLocked(addr);
+}
+
+bool SimEngine::willAccept(uint64_t addr, bool is_write) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return dramsim_->WillAcceptTransaction(addr, is_write);
+}
+
+uint64_t SimEngine::unmatchedCallbacks() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return unmatched_callbacks_;
+}
+
+uint64_t SimEngine::frontendBlockedWrites() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return frontendBlockedWritesLocked();
+}
+
+uint64_t SimEngine::frontendBlockedWritesLocked() const {
+  uint64_t n = 0;
+  for (int i = 1; i < num_buckets_; i += 2) {
+    for (const PendingTxn& t : frontend_rw_[static_cast<size_t>(i)]) {
+      if (readOutstandingLocked(t.addr)) {
+        ++n;
+      }
+    }
+  }
+  return n;
 }
 
 void SimEngine::drainFrontendLocked() {
-  for (auto it = frontend_.begin(); it != frontend_.end();) {
-    if (!dramsim_->WillAcceptTransaction(it->addr, it->is_write) ||
-        !admitLocked(it->addr, it->is_write, it->tag, it->issue_cycle)) {
-      ++it;
-      continue;
+  if (frontend_count_ == 0) {
+    return;
+  }
+  const int n = num_buckets_;
+  for (;;) {
+    int best = -1;
+    std::size_t best_idx = 0;
+    uint64_t best_seq = ~uint64_t{0};
+    for (int i = 0; i < n; ++i) {
+      auto& q = frontend_rw_[static_cast<size_t>(i)];
+      if (q.empty()) {
+        continue;
+      }
+      const bool write_bucket = (i % 2) == 1;
+      std::size_t idx = 0;
+      for (const PendingTxn& t : q) {
+        if (t.seq >= best_seq) {
+          if (!write_bucket) {
+            break;
+          }
+          ++idx;
+          continue;
+        }
+        if (t.is_write && readOutstandingLocked(t.addr)) {
+          // Skip only the aliasing write; later writes on this channel
+          // may still enter DRAMsim3 (avoids HOL-stalling the write
+          // queue behind a DRAMSim3 R→W deadlock).
+          if (!write_bucket) {
+            break;
+          }
+          ++idx;
+          continue;
+        }
+        if (!dramsim_->WillAcceptTransaction(t.addr, t.is_write)) {
+          break;
+        }
+        best = i;
+        best_idx = idx;
+        best_seq = t.seq;
+        break;
+      }
     }
-    it = frontend_.erase(it);
+    if (best < 0) {
+      return;
+    }
+    auto& q = frontend_rw_[static_cast<size_t>(best)];
+    auto it = q.begin();
+    std::advance(it, static_cast<std::ptrdiff_t>(best_idx));
+    const PendingTxn t = *it;
+    if (!admitLocked(t.addr, t.is_write, t.tag, t.issue_cycle)) {
+      return;
+    }
+    q.erase(it);
+    --frontend_count_;
   }
 }
 
 uint64_t SimEngine::inFlightLocked() const {
-  return num_outstanding_reads_ + num_outstanding_writes_ +
-         static_cast<uint64_t>(frontend_.size());
+  return num_outstanding_reads_ + num_outstanding_writes_ + frontend_count_;
 }
 
 uint64_t SimEngine::runTrace(const uint64_t* addrs, const bool* writes,
@@ -200,8 +377,9 @@ void SimEngine::noteTagLocked(uint64_t tag) {
   }
 }
 
-uint64_t SimEngine::advanceUntil(uint64_t target_cycle, bool stop_on_tag_done) {
-  std::lock_guard<std::mutex> lock(mutex_);
+uint64_t SimEngine::advanceUntilLocked(uint64_t target_cycle,
+                                       bool stop_on_tag_done,
+                                       uint64_t max_cycles) {
   tag_done_ = false;
   uint64_t n = 0;
   const bool bounded = target_cycle != std::numeric_limits<uint64_t>::max();
@@ -210,6 +388,9 @@ uint64_t SimEngine::advanceUntil(uint64_t target_cycle, bool stop_on_tag_done) {
       break;
     }
     if (!bounded && inFlightLocked() == 0) {
+      break;
+    }
+    if (!bounded && max_cycles > 0 && n >= max_cycles) {
       break;
     }
     if (stop_on_tag_done && tag_done_) {
@@ -224,14 +405,44 @@ uint64_t SimEngine::advanceUntil(uint64_t target_cycle, bool stop_on_tag_done) {
   return n;
 }
 
+uint64_t SimEngine::advanceUntil(uint64_t target_cycle, bool stop_on_tag_done,
+                                 uint64_t max_cycles) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return advanceUntilLocked(target_cycle, stop_on_tag_done, max_cycles);
+}
+
+uint64_t SimEngine::advanceBy(uint64_t cycles, bool stop_on_tag_done) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (cycles == 0) {
+    return 0;
+  }
+  uint64_t target = cycle_ + cycles;
+  if (target < cycle_) {
+    target = std::numeric_limits<uint64_t>::max();
+  }
+  // Finite lockstep jumps are not capped; overflow-to-unbounded keeps
+  // the old no-deadline behaviour (max_cycles = 0).
+  return advanceUntilLocked(target, stop_on_tag_done, 0);
+}
+
 uint64_t SimEngine::frontendSize() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return static_cast<uint64_t>(frontend_.size());
+  return frontend_count_;
 }
 
 uint64_t SimEngine::inFlight() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return inFlightLocked();
+}
+
+uint64_t SimEngine::advanceUntilInFlightBelow(uint64_t cap, uint64_t max_cycles) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  uint64_t n = 0;
+  while (n < max_cycles && inFlightLocked() >= cap && inFlightLocked() > 0) {
+    tickOnceLocked();
+    ++n;
+  }
+  return n;
 }
 
 uint64_t SimEngine::drain(uint64_t max_cycles) {
@@ -356,34 +567,38 @@ void SimEngine::resetStats() {
 
 void SimEngine::onReadComplete(uint64_t addr) {
   auto it = outstanding_reads_.find(addr);
-  if (it != outstanding_reads_.end()) {
-    uint64_t submit_cycle = it->second.front().first;
-    uint64_t tag = it->second.front().second;
-    it->second.pop();
-    if (it->second.empty()) {
-      outstanding_reads_.erase(it);
-    }
-    --num_outstanding_reads_;
-    ++completion_count_;
-    noteTagLocked(tag);
-    collect(addr, submit_cycle, tag, false);
+  if (it == outstanding_reads_.end()) {
+    ++unmatched_callbacks_;
+    return;
   }
+  uint64_t submit_cycle = it->second.front().first;
+  uint64_t tag = it->second.front().second;
+  it->second.pop();
+  if (it->second.empty()) {
+    outstanding_reads_.erase(it);
+  }
+  --num_outstanding_reads_;
+  ++completion_count_;
+  noteTagLocked(tag);
+  collect(addr, submit_cycle, tag, false);
 }
 
 void SimEngine::onWriteComplete(uint64_t addr) {
   auto it = outstanding_writes_.find(addr);
-  if (it != outstanding_writes_.end()) {
-    uint64_t submit_cycle = it->second.front().first;
-    uint64_t tag = it->second.front().second;
-    it->second.pop();
-    if (it->second.empty()) {
-      outstanding_writes_.erase(it);
-    }
-    --num_outstanding_writes_;
-    ++completion_count_;
-    noteTagLocked(tag);
-    collect(addr, submit_cycle, tag, true);
+  if (it == outstanding_writes_.end()) {
+    ++unmatched_callbacks_;
+    return;
   }
+  uint64_t submit_cycle = it->second.front().first;
+  uint64_t tag = it->second.front().second;
+  it->second.pop();
+  if (it->second.empty()) {
+    outstanding_writes_.erase(it);
+  }
+  --num_outstanding_writes_;
+  ++completion_count_;
+  noteTagLocked(tag);
+  collect(addr, submit_cycle, tag, true);
 }
 
 void SimEngine::collect(uint64_t addr, uint64_t submit_cycle, uint64_t tag,

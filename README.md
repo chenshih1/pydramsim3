@@ -39,7 +39,7 @@ Sdists are on
 [GitHub Releases](https://github.com/chenshih1/pydramsim3/releases):
 
 ```bash
-pip install pydramsim3-0.4.1.tar.gz
+pip install pydramsim3-0.4.4.tar.gz
 ```
 
 Release builds use LTO and link DRAMsim3 statically.  CI is Linux; any
@@ -76,24 +76,37 @@ temporary directory removed on `close()` / `with` / GC.
 | Call | What it does |
 |---|---|
 | `submit(addr, is_write, tag=None)` | Issue one burst.  Returns a tag.  Check `is not None` — tag `0` is valid. |
+| `submit_range(addr, count, stride, is_write, tag=None)` | Issue `count` bursts at `addr`, `addr+stride`, … (one frontend drain). |
 | `wait()` | Tick in C++ until the next completion (or idle). |
 | `advance_to(t)` | Tick to a host deadline; default `stop_on_completion=True`. |
-| `advance_until(t, stop_on_tag_done=True)` | Tick to a deadline, or until a `set_tag_quota` counter hits zero. `t=None` means no deadline. |
+| `advance_until(t, stop_on_tag_done=True)` | Tick to a deadline, or until a `set_tag_quota` counter hits zero. `t=None` also stops after `max_cycles` (default 10 million). |
 | `set_tag_quota(tag, n)` | Remaining bursts for a logical request. Completions decrement it. |
 | `pull()` | Return completions already collected (no ticking). |
-| `drain()` | Tick until controller and frontend are idle. |
+| `drain()` | Tick until callback-tracked in-flight traffic is gone. |
+| `debug_state()` | Stall snapshot: in-flight, frontend, unmatched callbacks, … |
 | `completions()` | `wait` until idle, yield each `Completion`. |
 
-`wait` / `drain` raise `RuntimeError` if still busy after `max_cycles`
-(default 10 million).
+`wait` / `drain` / unbounded `advance_until` raise `RuntimeError` if still
+busy after `max_cycles` (default 10 million).  The message includes
+`debug_state()`.
 
 **Backpressure.** `queue_size` is DRAMsim3's per-channel
 `trans_queue_size`, not a global cap — each channel has separate read
-and write queues.  Default `frontend_queue=True`: `submit` always
-succeeds and parks overflow in C++ (unbounded; `wait` / `drain` so it
-does not grow forever).  `frontend_queue=False`: `submit` returns
-`None` when that address and direction are not accepted; a later call
-to a free queue can still succeed.
+and write queues.  `outstanding_cap="hw"` is
+`channels × trans_queue_size + channels`.  Default `frontend_queue=True`:
+`submit` parks overflow in C++ until the outstanding window is full.
+`frontend_queue=False`: `submit` returns `None` when that address and
+direction are not accepted; a later call to a free queue can still succeed.
+
+A write to an address with an in-flight read stays on the frontend until
+that read completes (DRAMsim3 deadlocks if the write buffer fills while
+its head matches a pending read).  Later writes on the same channel are
+not HOL-blocked.
+
+**Posted writes.** DRAMsim3 completes writes one cycle after accept.
+`busy` / `in_flight` follow those callbacks, not the write buffer.
+`will_accept(addr, True)` is False while that channel's write buffer is
+full.
 
 **`Completion`:** `addr`, `latency`, `tag`, `is_write`, `cycle`
 (engine clock after the ClockTick that produced the event).
@@ -134,14 +147,15 @@ ch0["total_energy"]          # pJ
 ch0["average_power"]         # mW
 ch0["average_bandwidth"]
 ch0["read_latency"]          # {cycles: count}
+mem.get_stats(refresh=False) # last snapshot; no extra idle energy
 mem.stats_json_path          # working_dir/dramsim3.json
 ```
 
 ## API
 
 ```python
-Memory(config_file, working_dir=None, *, frontend_queue=True, burst_size=None)
-Memory.from_config(config_name, working_dir=None, *, frontend_queue=True, burst_size=None)
+Memory(config_file, working_dir=None, *, frontend_queue=True, outstanding_cap=None, burst_size=None)
+Memory.from_config(config_name, working_dir=None, *, frontend_queue=True, outstanding_cap=None, burst_size=None)
 ```
 
 | | Role |
@@ -152,8 +166,9 @@ Memory.from_config(config_name, working_dir=None, *, frontend_queue=True, burst_
 | `close()` | Drop the engine; delete a default temp `working_dir` |
 
 **Properties:** `busy`, `current_cycle`, `clock_period`, `queue_size`,
-`burst_size`, `frontend_size`, `num_outstanding`,
-`num_outstanding_reads`, `num_outstanding_writes`.
+`burst_size`, `frontend_size`, `num_channels`, `memory_size`,
+`num_outstanding`, `num_outstanding_reads`, `num_outstanding_writes`,
+`in_flight`, `outstanding_cap`.
 
 Supports `with`.  Module helpers: `configs_dir()`, `list_configs()`,
 `resolve_config(name)`.
