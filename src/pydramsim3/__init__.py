@@ -1,19 +1,21 @@
 """PyDRAMsim3 — event-driven Python host for DRAMsim3.
 
 :class:`Memory` is the public API: ``submit``, then ``wait`` /
-``advance_to`` / ``drain``.  Python wakes on completions; DRAMsim3 runs
-cycle-accurately in C++.
+``advance_to`` / ``drain`` (event loop) or ``tick`` / ``advance_by``
+(lockstep).  Python wakes on completions; DRAMsim3 runs cycle-accurately
+in C++.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .memory import Completion, Memory, RequestType
+from .memory import Completion, DebugState, Memory, RequestType
 from .tracker import LatencyStats, LatencyTracker
 
 __all__ = [
     "Completion",
+    "DebugState",
     "LatencyStats",
     "LatencyTracker",
     "Memory",
@@ -23,7 +25,7 @@ __all__ = [
     "resolve_config",
 ]
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 
 
 def configs_dir() -> Path:

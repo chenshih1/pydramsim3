@@ -1,5 +1,5 @@
-#ifndef PDRAMSIM3_SIM_ENGINE_HPP
-#define PDRAMSIM3_SIM_ENGINE_HPP
+#ifndef PYDRAMSIM3_SIM_ENGINE_HPP
+#define PYDRAMSIM3_SIM_ENGINE_HPP
 
 #include <cstdint>
 #include <deque>
@@ -14,15 +14,16 @@
 #include "dramsim3.h"
 
 // SimEngine owns the full DRAM hot loop:
-//   - transaction submission with backpressure (try_enqueue)
-//   - batched clock ticking (tick(n) / drain(max_cycles))
-//   - outstanding-transaction tracking (addr -> queue of issue cycle + tag)
-//   - per-transaction latency computed in C++ at completion time
-//   - completion events collected in C++ buffers and exported to Python in
-//     bulk (no per-event Python reentry, GIL may be released during tick)
+//   - issue: tryAdmit / park / parkRange
+//   - time: public methods only set stop predicates; advanceLocked is the
+//     tick loop (Python Memory event-loop helpers pull Completions)
+//   - occupancy: inFlight, frontendSize, numOutstanding*, unmatchedCallbacks
+//   - completions collected in C++ and exported in bulk (no per-event
+//     Python reentry; GIL may be released during tick)
 //
-// Thread safety: methods are guarded by an internal mutex, so the GIL can be
-// released around long-running tick()/drain() calls.
+// Declaration order is ABI-stable; do not reorder methods.  Thread safety:
+// methods are guarded by an internal mutex so the GIL can be released
+// around long-running tick()/drain() calls.
 class SimEngine {
  public:
   SimEngine(const std::string& config_file, const std::string& working_dir,
@@ -33,7 +34,7 @@ class SimEngine {
   // Returns false on backpressure (DRAMsim3's AddTransaction re-checks its
   // per-channel acceptance internally and fails when the queue is full, so
   // no separate can_accept call is needed).
-  bool tryEnqueue(uint64_t addr, bool is_write, uint64_t tag);
+  bool tryAdmit(uint64_t addr, bool is_write, uint64_t tag);
 
   // Advance *cycles* clock cycles; returns the number of cycles advanced.
   // Completion events are collected internally; retrieve them with
@@ -48,7 +49,7 @@ class SimEngine {
   uint64_t runTrace(const uint64_t* addrs, const bool* writes, size_t count,
                     uint64_t gap_cycles, uint64_t max_drain_cycles);
 
-  // Tick until the next try_enqueue(addr, is_write) would succeed
+  // Tick until the next tryAdmit(addr, is_write) would succeed
   // (DRAMsim3 WillAcceptTransaction for that address and direction), or
   // max_cycles is exhausted.  Returns the number of cycles executed.
   // Used to absorb backpressure waits inside C++ instead of ping-ponging
@@ -58,14 +59,14 @@ class SimEngine {
   // writes into separate per-channel queues, and write completion callbacks
   // fire one cycle after submission, so the outstanding counter alone cannot
   // tell when a specific transaction would be accepted.
-  uint64_t tickUntilCapacity(uint64_t addr, bool is_write, uint64_t max_cycles);
+  uint64_t advanceUntilAccept(uint64_t addr, bool is_write, uint64_t max_cycles);
 
   // Tick until at least one transaction completes (read or write callback),
   // or max_cycles is exhausted, or nothing is in flight / parked.  Returns
   // the number of cycles executed.  This is the DES-host primitive: the
   // Python event loop sleeps until the next completion instead of ticking
   // every DRAM cycle.
-  uint64_t tickUntilCompletion(uint64_t max_cycles);
+  uint64_t advanceUntilCompletion(uint64_t max_cycles);
 
   // Tick until current_cycle >= target_cycle.  If stop_on_completion is
   // true, return early at the ClockTick that produces the first new
@@ -91,19 +92,19 @@ class SimEngine {
 
   // Park on a software frontend queue when the controller will not
   // accept, and drain into DRAMsim3 on later ticks.  Latency is measured
-  // from this enqueue's issue cycle (queue wait is included).  DES hosts
-  // should use this instead of tryEnqueue.
+  // from this park's issue cycle (queue wait is included).  DES hosts
+  // should use this instead of tryAdmit.
   //
   // Returns false when outstanding_cap is set and in-flight is already
   // at the cap (nothing parked).  With cap 0 (default) always succeeds.
-  bool enqueue(uint64_t addr, bool is_write, uint64_t tag);
+  bool park(uint64_t addr, bool is_write, uint64_t tag);
 
   // Park up to *count* consecutive bursts (addr, addr+stride, ...) then
-  // drain once.  Same admission order as that many enqueue() calls with
+  // drain once.  Same admission order as that many park() calls with
   // no ClockTick in between.  Returns how many were parked (less than
   // *count* when outstanding_cap is reached).
-  uint64_t enqueueRange(uint64_t addr, uint64_t count, uint64_t stride,
-                        bool is_write, uint64_t tag);
+  uint64_t parkRange(uint64_t addr, uint64_t count, uint64_t stride,
+                     bool is_write, uint64_t tag);
 
   // Finite in-flight window (DRAMsim3 outstanding + frontend).  0 means
   // unbounded parking.  Does not change per-channel HOL bypass of
@@ -169,14 +170,14 @@ class SimEngine {
   void resetStats();
 
  private:
-  struct CompletionEvent {
+  struct Completion {
     uint64_t addr;
     uint64_t latency;
     uint64_t tag;
     uint64_t cycle;
     bool is_write;
   };
-  struct PendingTxn {
+  struct PendingTransaction {
     uint64_t addr;
     bool is_write;
     uint64_t tag;
@@ -192,27 +193,42 @@ class SimEngine {
              std::vector<uint64_t>, std::vector<uint64_t>>
   extractCompletionsLocked(bool want_write);
   // Submits one transaction; assumes mutex_ is held.
-  bool tryEnqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
+  bool tryAdmitLocked(uint64_t addr, bool is_write, uint64_t tag);
   bool admitLocked(uint64_t addr, bool is_write, uint64_t tag,
                    uint64_t issue_cycle);
   bool readOutstandingLocked(uint64_t addr) const;
   // Push onto the frontend and try to drain; assumes mutex_ is held.
   // Returns false when the outstanding cap is full.
-  bool enqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
+  bool parkLocked(uint64_t addr, bool is_write, uint64_t tag);
   bool atCapLocked() const;
-  void parkLocked(uint64_t addr, bool is_write, uint64_t tag);
+  void pushFrontendLocked(uint64_t addr, bool is_write, uint64_t tag);
   int bucketOf(uint64_t addr, bool is_write) const;
   int channelOfLocked(uint64_t addr) const;
   // Move parked frontend transactions into DRAMsim3.  Per-channel
   // blocking does not stall later requests to a free channel.  Only
   // queue heads are tried (WillAccept is per channel and direction),
-  // admitted in global enqueue order.
+  // admitted in global park order.
   void drainFrontendLocked();
   // Advances one cycle; assumes mutex_ is held.
   void tickOnceLocked();
   uint64_t inFlightLocked() const;
-  uint64_t advanceUntilLocked(uint64_t target_cycle, bool stop_on_tag_done,
-                              uint64_t max_cycles);
+  // Stop predicates for advanceLocked.  Do not use UINT64_MAX as a
+  // "no target" sentinel: advanceTo(UINT64_MAX) is a real deadline.
+  struct AdvanceSpec {
+    uint64_t max_ticks = ~uint64_t{0};
+    uint64_t target_cycle = 0;
+    uint64_t in_flight_below = 0;
+    uint64_t accept_addr = 0;
+    bool has_target = false;
+    bool accept_write = false;
+    bool stop_if_idle = false;
+    bool stop_on_completion = false;
+    bool stop_on_tag_done = false;
+    bool stop_on_accept = false;
+    bool stop_on_in_flight_below = false;
+    bool reset_tag_done = false;
+  };
+  uint64_t advanceLocked(const AdvanceSpec& spec);
   void noteTagLocked(uint64_t tag);
   uint64_t frontendBlockedWritesLocked() const;
 
@@ -233,7 +249,7 @@ class SimEngine {
   uint64_t unmatched_callbacks_ = 0;
 
   bool collect_events_ = true;
-  std::vector<CompletionEvent> events_;
+  std::vector<Completion> events_;
   uint64_t completion_count_ = 0;
 
   // Host logical-request quotas: tag -> remaining bursts.
@@ -242,10 +258,10 @@ class SimEngine {
 
   // Software frontend: one FIFO per (channel, read/write).  WillAccept
   // is per-channel and per-direction, so a full scan of a global deque
-  // is equivalent to trying these heads in enqueue-seq order.
-  std::vector<std::deque<PendingTxn>> frontend_rw_;
+  // is equivalent to trying these heads in park-seq order.
+  std::vector<std::deque<PendingTransaction>> frontend_queues_;
   uint64_t frontend_count_ = 0;
-  uint64_t enqueue_seq_ = 0;
+  uint64_t park_seq_ = 0;
   int num_channels_ = 0;
   int num_buckets_ = 0;
   uint64_t memory_size_ = 0;
@@ -263,4 +279,4 @@ class SimEngine {
   mutable std::mutex mutex_;
 };
 
-#endif  // PDRAMSIM3_SIM_ENGINE_HPP
+#endif  // PYDRAMSIM3_SIM_ENGINE_HPP

@@ -81,7 +81,7 @@ class TestSimEngine:
 
     def test_take_read_completions_np(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x1000, False)
+        e.try_admit(0x1000, False)
         e.tick(500)
         addrs, lats, _tags, _cycles = e.take_read_completions_np()
         assert addrs.dtype == np.uint64
@@ -92,14 +92,14 @@ class TestSimEngine:
 
     def test_take_write_completions_np(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x2000, True)
+        e.try_admit(0x2000, True)
         e.tick(10)
         addrs, _, _, _ = e.take_write_completions_np()
         assert addrs.tolist() == [0x2000]
 
-    def test_try_enqueue_and_take_read_completions(self, tmp_path):
+    def test_try_admit_and_take_read_completions(self, tmp_path):
         e = self._make(tmp_path)
-        assert e.try_enqueue(0x1000, False)
+        assert e.try_admit(0x1000, False)
         e.tick(500)
         addrs, lats, _tags, _ = e.take_read_completions()
         assert addrs == [0x1000]
@@ -107,7 +107,7 @@ class TestSimEngine:
 
     def test_take_completions_clears_buffer(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x1000, False)
+        e.try_admit(0x1000, False)
         e.tick(500)
         addrs, _, _, _ = e.take_read_completions()
         assert len(addrs) == 1
@@ -116,14 +116,14 @@ class TestSimEngine:
 
     def test_write_completions(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x2000, True)
+        e.try_admit(0x2000, True)
         e.tick(10)
         addrs, _lats, _tags, _ = e.take_write_completions()
         assert addrs == [0x2000]
 
     def test_tag_roundtrip(self, tmp_path):
         e = self._make(tmp_path)
-        assert e.try_enqueue(0x1000, False, tag=42)
+        assert e.try_admit(0x1000, False, tag=42)
         e.tick(500)
         addrs, _lats, tags, _ = e.take_read_completions()
         assert addrs == [0x1000]
@@ -131,16 +131,16 @@ class TestSimEngine:
 
     def test_tag_default_zero(self, tmp_path):
         e = self._make(tmp_path)
-        assert e.try_enqueue(0x1000, False)
+        assert e.try_admit(0x1000, False)
         e.tick(500)
         _, _, tags, _ = e.take_read_completions()
         assert tags == [0]
 
     def test_tags_fifo_same_address(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x1000, False, tag=1)
-        e.try_enqueue(0x1000, False, tag=2)
-        e.try_enqueue(0x1000, False, tag=3)
+        e.try_admit(0x1000, False, tag=1)
+        e.try_admit(0x1000, False, tag=2)
+        e.try_admit(0x1000, False, tag=3)
         e.tick(1000)
         _, _, tags, _ = e.take_read_completions()
         # FIFO per address: completions arrive in submission order
@@ -149,35 +149,35 @@ class TestSimEngine:
     def test_backpressure_at_queue_size(self, tmp_path):
         e = self._make(tmp_path, collect=False)
         accepted = 0
-        while e.try_enqueue(0x1000 + accepted * 64, False):
+        while e.try_admit(0x1000 + accepted * 64, False):
             accepted += 1
         assert accepted == e.queue_size
-        assert not e.try_enqueue(0x9999, False)
+        assert not e.try_admit(0x9999, False)
 
-    def test_tick_until_capacity_waits(self, tmp_path):
+    def test_advance_until_accept_waits(self, tmp_path):
         e = self._make(tmp_path, collect=False)
         accepted = 0
-        while e.try_enqueue(0x1000 + accepted * 64, False):
+        while e.try_admit(0x1000 + accepted * 64, False):
             accepted += 1
         assert accepted == e.queue_size
         # queue is now full; waiting must advance cycles and free a slot
         addr = 0x1000 + accepted * 64
-        n = e.tick_until_capacity(addr, False)
+        n = e.advance_until_accept(addr, False)
         assert n > 0
-        assert e.try_enqueue(addr, False)
+        assert e.try_admit(addr, False)
 
-    def test_tick_until_capacity_returns_zero_when_free(self, tmp_path):
+    def test_advance_until_accept_returns_zero_when_free(self, tmp_path):
         e = self._make(tmp_path)
-        assert e.tick_until_capacity(0x1000, False) == 0
+        assert e.advance_until_accept(0x1000, False) == 0
 
     def test_drain(self, tmp_path):
         e = self._make(tmp_path, collect=False)
         for i in range(16):
-            assert e.try_enqueue(0x1000 + i * 64, False)
-        assert e.num_outstanding() == 16
+            assert e.try_admit(0x1000 + i * 64, False)
+        assert e.num_outstanding == 16
         cycles = e.drain(1_000_000)
         assert cycles > 0
-        assert e.num_outstanding() == 0
+        assert e.num_outstanding == 0
 
     def test_drain_empty_returns_zero(self, tmp_path):
         e = self._make(tmp_path)
@@ -185,7 +185,7 @@ class TestSimEngine:
 
     def test_set_collect_clears_events(self, tmp_path):
         e = self._make(tmp_path)
-        e.try_enqueue(0x1000, False)
+        e.try_admit(0x1000, False)
         e.tick(500)
         e.set_collect(False)
         addrs, _, _, _ = e.take_read_completions()
@@ -194,7 +194,7 @@ class TestSimEngine:
     def test_multiple_completions_ordered(self, tmp_path):
         e = self._make(tmp_path)
         for _i in range(4):
-            e.try_enqueue(0x1000, False)
+            e.try_admit(0x1000, False)
         e.tick(1000)
         addrs, lats, _tags, _ = e.take_read_completions()
         assert len(addrs) == 4
@@ -207,10 +207,10 @@ class TestSimEngine:
         reads zero; waiting must key on DRAMsim3's own acceptance check."""
         e = self._make(tmp_path, collect=False)
         for i in range(300):
-            while not e.try_enqueue(0x1000 + i * 64, True):
-                e.tick_until_capacity(0x1000 + i * 64, True)
+            while not e.try_admit(0x1000 + i * 64, True):
+                e.advance_until_accept(0x1000 + i * 64, True)
         e.drain(10_000_000)
-        assert e.num_outstanding() == 0
+        assert e.num_outstanding == 0
 
     def test_sustained_mixed_replay_no_deadlock(self, tmp_path):
         """Regression: sustained mixed traffic used to busy-spin in Python."""
@@ -775,10 +775,10 @@ class TestPythonic:
         assert all(c.is_write for c in completions)
         assert mem.num_outstanding == 0
 
-    def test_stats_property(self, tmp_path):
+    def test_get_stats(self, tmp_path):
         mem = self._mem(tmp_path)
         mem.submit(0x1000, RequestType.READ)
         mem.drain()
-        stats = mem.stats
+        stats = mem.get_stats()
         assert isinstance(stats, dict)
         assert "0" in stats

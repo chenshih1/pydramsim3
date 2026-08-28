@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-26
+
+### Added
+
+- Lockstep time primitives on `Memory`: `tick`, `advance_by`,
+  `advance_until_completion`, `advance_until_in_flight_below`,
+  `advance_until_accept`.  These return cycle counts and leave
+  completions for `pull()`, so a DES host does not need `SimEngine`.
+  `wait` / `advance_to` / `advance_until` / `drain` still return events.
+- `Memory.unmatched_callbacks` and `Memory.frontend_blocked_writes`
+  properties (already in `debug_state`).
+- `DebugState` named tuple for `debug_state` (still dict-indexable).
+
+### Changed
+
+Breaking rename (no aliases).  Stay on `v0.4.4` if you need the old names.
+
+- Issue verbs: C++ `tryAdmit` / `park` / `parkRange` (Python `try_admit` /
+  `park` / `park_range`).  `Memory.submit` is unchanged.  `submit_range`
+  returns how many bursts were parked (`0` if none).  `Memory.park_range`
+  is removed.
+- Time verbs: `advanceUntilCompletion` / `advanceUntilAccept` (Python
+  `advance_until_completion` / `advance_until_accept`).  `tick`,
+  `advance_to` / `until` / `by`, `drain`, and `wait` are unchanged.
+- Zero-arg occupancy queries are properties: `in_flight`, `frontend_size`,
+  `num_outstanding*`, `unmatched_callbacks`, `frontend_blocked_writes`,
+  `outstanding_cap`.  `Memory.debug_state` is a property.
+- Types: `PendingTransaction`, `Completion`; `frontend_queues_`.
+- Include guard `PYDRAMSIM3_SIM_ENGINE_HPP`.
+- `Memory` source is grouped by role (issue, event loop, lockstep,
+  occupancy).  `debug_state` returns `DebugState`.
+- Internal: host time primitives share one `advanceLocked` stop-predicate
+  loop (`has_target` rather than a UINT64_MAX sentinel).  Public names
+  and stop semantics are unchanged.
+
+### Fixed
+
+- Ruff ignores vendored `third_party/` and Markdown, so `ruff check .`
+  / `ruff format --check .` match the development docs.
+
+### Removed
+
+- `Memory.stats`.  Use `get_stats` / `print_stats` / `reset_stats`.
+
 ## [0.4.4] - 2026-08-26
 
 ### Added

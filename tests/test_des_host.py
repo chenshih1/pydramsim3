@@ -2,7 +2,7 @@
 
 import pytest
 
-from pydramsim3 import Completion, Memory, RequestType, configs_dir
+from pydramsim3 import Completion, DebugState, Memory, RequestType, configs_dir
 from pydramsim3._dramsim3 import SimEngine
 
 
@@ -14,8 +14,8 @@ def _engine(tmp_path, collect=True):
 class TestTickUntilCompletion:
     def test_stops_at_first_completion(self, tmp_path):
         e = _engine(tmp_path)
-        assert e.try_enqueue(0x1000, False, tag=1)
-        n = e.tick_until_completion()
+        assert e.try_admit(0x1000, False, tag=1)
+        n = e.advance_until_completion()
         assert n > 0
         assert e.current_cycle == n
         addrs, lats, tags, cycles = e.take_read_completions()
@@ -25,7 +25,7 @@ class TestTickUntilCompletion:
         assert cycles == [n]
         # One-by-one tick must match the DES timestamp.
         e2 = _engine(tmp_path)
-        e2.try_enqueue(0x1000, False, tag=1)
+        e2.try_admit(0x1000, False, tag=1)
         for _ in range(n):
             e2.tick(1)
         assert e2.current_cycle == n
@@ -35,12 +35,12 @@ class TestTickUntilCompletion:
 
     def test_idle_returns_zero(self, tmp_path):
         e = _engine(tmp_path)
-        assert e.tick_until_completion() == 0
+        assert e.advance_until_completion() == 0
 
     def test_write_completion(self, tmp_path):
         e = _engine(tmp_path)
-        e.try_enqueue(0x2000, True, tag=7)
-        n = e.tick_until_completion()
+        e.try_admit(0x2000, True, tag=7)
+        n = e.advance_until_completion()
         assert n > 0
         addrs, _, tags, cycles = e.take_write_completions()
         assert addrs == [0x2000]
@@ -49,7 +49,7 @@ class TestTickUntilCompletion:
 
     def test_advance_to_deadline(self, tmp_path):
         e = _engine(tmp_path)
-        e.try_enqueue(0x1000, False)
+        e.try_admit(0x1000, False)
         n = e.advance_to(5, stop_on_completion=False)
         assert n == 5
         assert e.current_cycle == 5
@@ -59,7 +59,7 @@ class TestTickUntilCompletion:
 
     def test_advance_to_stops_on_completion(self, tmp_path):
         e = _engine(tmp_path)
-        e.try_enqueue(0x1000, False)
+        e.try_admit(0x1000, False)
         n = e.advance_to(10_000, stop_on_completion=True)
         assert 0 < n < 10_000
         addrs, _, _, cycles = e.take_read_completions()
@@ -71,21 +71,21 @@ class TestTagQuota:
     def test_stops_when_logical_request_done(self, tmp_path):
         e = _engine(tmp_path)
         # Two bursts, same tag: stop after both complete, not the first.
-        e.enqueue(0x1000, False, tag=7)
-        e.enqueue(0x1040, False, tag=7)
+        e.park(0x1000, False, tag=7)
+        e.park(0x1040, False, tag=7)
         e.set_tag_quota(7, 2)
         n = e.advance_until(10_000_000, True)
         assert n > 0
         addrs, _, tags, _ = e.take_read_completions()
         assert tags == [7, 7]
         assert len(addrs) == 2
-        assert e.in_flight() == 0
+        assert e.in_flight == 0
 
     def test_stops_on_first_finished_tag_not_all_traffic(self, tmp_path):
         e = _engine(tmp_path)
-        e.enqueue(0x1000, False, tag=1)
-        e.enqueue(0x2000, False, tag=2)
-        e.enqueue(0x2040, False, tag=2)
+        e.park(0x1000, False, tag=1)
+        e.park(0x2000, False, tag=2)
+        e.park(0x2040, False, tag=2)
         e.set_tag_quota(1, 1)
         e.set_tag_quota(2, 2)
         e.advance_until(10_000_000, True)
@@ -98,28 +98,28 @@ class TestTagQuota:
 
 
 class TestFrontendQueue:
-    def test_enqueue_beyond_queue_size(self, tmp_path):
+    def test_park_beyond_queue_size(self, tmp_path):
         e = _engine(tmp_path)
         n_submit = e.queue_size + 16
         for i in range(n_submit):
-            e.enqueue(0x1000 + i * 64, False, tag=i + 1)
-        assert e.frontend_size() > 0
+            e.park(0x1000 + i * 64, False, tag=i + 1)
+        assert e.frontend_size > 0
         # Single-channel DDR4: the read queue fills at trans_queue_size.
-        assert e.num_outstanding() == e.queue_size
+        assert e.num_outstanding == e.queue_size
         e.drain()
         addrs, _, tags, _ = e.take_read_completions()
         assert len(addrs) == n_submit
         assert tags == list(range(1, n_submit + 1))
-        assert e.frontend_size() == 0
-        assert e.num_outstanding() == 0
+        assert e.frontend_size == 0
+        assert e.num_outstanding == 0
 
     def test_latency_includes_queue_wait(self, tmp_path):
         e = _engine(tmp_path)
         # Fill the controller, then park one extra.
         for i in range(e.queue_size):
-            e.enqueue(0x1000 + i * 64, False, tag=i)
-        e.enqueue(0x9000, False, tag=99)
-        assert e.frontend_size() >= 1
+            e.park(0x1000 + i * 64, False, tag=i)
+        e.park(0x9000, False, tag=99)
+        assert e.frontend_size >= 1
         e.drain()
         _, lats, tags, _ = e.take_read_completions()
         parked = lats[tags.index(99)]
@@ -130,11 +130,11 @@ class TestFrontendQueue:
         e = _engine(tmp_path)
         n_submit = e.queue_size + 8
         for i in range(n_submit):
-            e.enqueue(0x1000 + i * 64, False, tag=i)
-        assert e.in_flight() == n_submit
-        assert e.in_flight() == e.num_outstanding() + e.frontend_size()
+            e.park(0x1000 + i * 64, False, tag=i)
+        assert e.in_flight == n_submit
+        assert e.in_flight == e.num_outstanding + e.frontend_size
         e.drain()
-        assert e.in_flight() == 0
+        assert e.in_flight == 0
 
     def test_hol_read_bypasses_blocked_writes(self, tmp_path):
         """A blocked write at the frontend head must not stall a later read.
@@ -146,21 +146,21 @@ class TestFrontendQueue:
         e = _engine(tmp_path)
         n = e.queue_size + 8
         for i in range(n):
-            e.enqueue(0x1000 + i * 64, True, tag=i)
-        e.enqueue(0x9000, False, tag=999)
-        assert e.frontend_size() > 0
+            e.park(0x1000 + i * 64, True, tag=i)
+        e.park(0x9000, False, tag=999)
+        assert e.frontend_size > 0
         e.tick(2)
-        assert e.num_outstanding_reads() == 1
-        assert e.frontend_size() > 0
+        assert e.num_outstanding_reads == 1
+        assert e.frontend_size > 0
 
-    def test_enqueue_range_matches_repeated_enqueue(self, tmp_path):
+    def test_park_range_matches_repeated_park(self, tmp_path):
         def drain_tags(use_range):
             e = _engine(tmp_path)
             if use_range:
-                e.enqueue_range(0x1000, 24, 64, False, tag=3)
+                e.park_range(0x1000, 24, 64, False, tag=3)
             else:
                 for i in range(24):
-                    e.enqueue(0x1000 + i * 64, False, tag=3)
+                    e.park(0x1000 + i * 64, False, tag=3)
             e.drain()
             addrs, _, tags, cycles = e.take_read_completions()
             return list(addrs), list(tags), list(cycles)
@@ -169,11 +169,11 @@ class TestFrontendQueue:
 
     def test_advance_by_matches_advance_until(self, tmp_path):
         e = _engine(tmp_path)
-        e.enqueue(0x1000, False, tag=1)
+        e.park(0x1000, False, tag=1)
         n = e.advance_by(10_000, True)
         addrs, _, tags, cycles = e.take_read_completions()
         e2 = _engine(tmp_path)
-        e2.enqueue(0x1000, False, tag=1)
+        e2.park(0x1000, False, tag=1)
         n2 = e2.advance_until(e2.current_cycle + 10_000, True)
         addrs2, _, tags2, cycles2 = e2.take_read_completions()
         assert n == n2
@@ -186,46 +186,46 @@ class TestFrontendQueue:
         e = SimEngine(cfg, str(tmp_path), True)
         # 8 channels * queue_size reads, plus overflow to park on the frontend.
         n = 8 * e.queue_size + 64
-        e.enqueue_range(0x1000, n, 64, False, tag=1)
-        parked = e.frontend_size()
+        e.park_range(0x1000, n, 64, False, tag=1)
+        parked = e.frontend_size
         assert parked > 0
         # Write queue is independent of a full read queue.  The write
         # address must not alias an in-flight read: DRAMSim3 deadlocks
         # if a posted write shares a pending read's address.
         wr = 0x1000 + n * 64 + (1 << 20)
-        e.enqueue(wr, True, tag=9999)
-        assert e.num_outstanding_writes() == 1
-        assert e.frontend_size() == parked
+        e.park(wr, True, tag=9999)
+        assert e.num_outstanding_writes == 1
+        assert e.frontend_size == parked
 
     def test_many_parked_reads_all_complete(self, tmp_path):
         cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
         e = SimEngine(cfg, str(tmp_path), True)
         n = 4096
-        e.enqueue_range(0x1000, n, 64, False, tag=1)
+        e.park_range(0x1000, n, 64, False, tag=1)
         e.set_tag_quota(1, n)
         e.drain()
         addrs, _, tags, _ = e.take_read_completions()
         assert len(addrs) == n
         assert tags == [1] * n
-        assert e.frontend_size() == 0
-        assert e.in_flight() == 0
+        assert e.frontend_size == 0
+        assert e.in_flight == 0
 
     def test_outstanding_cap_blocks_then_partial_range(self, tmp_path):
         e = _engine(tmp_path)
         cap = e.queue_size
-        e.set_outstanding_cap(cap)
-        assert e.outstanding_cap() == cap
-        parked = e.enqueue_range(0x1000, cap + 40, 64, False, tag=1)
+        e.outstanding_cap = cap
+        assert e.outstanding_cap == cap
+        parked = e.park_range(0x1000, cap + 40, 64, False, tag=1)
         assert parked == cap
-        assert e.in_flight() == cap
-        assert e.enqueue(0x9000, False, tag=99) is False
-        extra = e.enqueue_range(0x2000, 16, 64, False, tag=2)
+        assert e.in_flight == cap
+        assert e.park(0x9000, False, tag=99) is False
+        extra = e.park_range(0x2000, 16, 64, False, tag=2)
         assert extra == 0
         e.drain()
         addrs, _, tags, _ = e.take_read_completions()
         assert len(addrs) == cap
         assert tags == [1] * cap
-        parked2 = e.enqueue_range(0x2000, 16, 64, False, tag=2)
+        parked2 = e.park_range(0x2000, 16, 64, False, tag=2)
         assert parked2 == 16
         e.drain()
         addrs, _, tags, _ = e.take_read_completions()
@@ -241,40 +241,40 @@ class TestFrontendQueue:
         """
         cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
         e = SimEngine(cfg, str(tmp_path), True)
-        e.set_outstanding_cap(0)
+        e.outstanding_cap = 0
         addr = 0x1000
-        assert e.try_enqueue(addr, False, tag=1)
+        assert e.try_admit(addr, False, tag=1)
         # 32 same-channel writes (stride 8KB keeps HBM channel bits fixed);
         # the first aliases the in-flight read.
         for i in range(32):
-            assert e.enqueue(addr + i * (1 << 13), True, tag=2)
-        assert e.num_outstanding_reads() == 1
-        assert e.frontend_blocked_writes() == 1
-        assert e.num_outstanding_writes() == 31
-        assert e.frontend_size() == 1
+            assert e.park(addr + i * (1 << 13), True, tag=2)
+        assert e.num_outstanding_reads == 1
+        assert e.frontend_blocked_writes == 1
+        assert e.num_outstanding_writes == 31
+        assert e.frontend_size == 1
         e.drain(1_000_000)
-        assert e.in_flight() == 0
+        assert e.in_flight == 0
 
     def test_advance_until_in_flight_below(self, tmp_path):
         e = _engine(tmp_path)
         cap = e.queue_size
-        e.set_outstanding_cap(cap)
-        e.enqueue_range(0x1000, cap, 64, False, tag=1)
+        e.outstanding_cap = cap
+        e.park_range(0x1000, cap, 64, False, tag=1)
         n = e.advance_until_in_flight_below(cap)
         assert n > 0
-        assert e.in_flight() < cap
+        assert e.in_flight < cap
 
     def test_outstanding_cap_keeps_hol_bypass(self, tmp_path):
         """A global credit cap must not serialize already-queued channels."""
         e = _engine(tmp_path)
         n = e.queue_size + 8
-        e.set_outstanding_cap(n + 1)
+        e.outstanding_cap = n + 1
         for i in range(n):
-            e.enqueue(0x1000 + i * 64, True, tag=i)
-        assert e.enqueue(0x9000, False, tag=999)
+            e.park(0x1000 + i * 64, True, tag=i)
+        assert e.park(0x9000, False, tag=999)
         e.tick(2)
-        assert e.num_outstanding_reads() == 1
-        assert e.frontend_size() > 0
+        assert e.num_outstanding_reads == 1
+        assert e.frontend_size > 0
 
 
 class TestMemoryApi:
@@ -300,31 +300,69 @@ class TestMemoryApi:
 
     def test_submit_range(self, tmp_path):
         mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
-        assert mem.submit_range(0x1000, 12, 64, False, tag=5) == 5
+        assert mem.submit_range(0x1000, 12, 64, False, tag=5) == 12
         evs = mem.drain()
         assert [e.tag for e in evs] == [5] * 12
         assert [e.addr for e in evs] == [0x1000 + i * 64 for i in range(12)]
 
-    def test_hw_outstanding_cap_hbm1(self, tmp_path):
+    def test_hardware_outstanding_cap_hbm1(self, tmp_path):
         mem = Memory.from_config("HBM1_4Gb_x128", working_dir=str(tmp_path), outstanding_cap="hw")
         assert mem.num_channels == 8
         assert mem.queue_size == 32
         assert mem.outstanding_cap == 8 * 32 + 8
         n = mem.outstanding_cap + 64
-        assert mem.park_range(0x1000, n, 64, False, tag=1) == mem.outstanding_cap
+        assert mem.submit_range(0x1000, n, 64, False, tag=1) == mem.outstanding_cap
         assert mem.in_flight == mem.outstanding_cap
         assert mem.submit(0x9000, False) is None
         evs = mem.drain()
         assert len(evs) == mem.outstanding_cap
-        assert mem.park_range(0x2000, 16, 64, False, tag=2) == 16
+        assert mem.submit_range(0x2000, 16, 64, False, tag=2) == 16
         assert mem.drain()
 
-    def test_submit_range_none_when_cap_full(self, tmp_path):
+    def test_lockstep_tick_leaves_completions(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
+        mem.submit(0x1000, False, tag=1)
+        n = mem.advance_until_completion()
+        assert n > 0
+        assert not mem.busy
+        assert mem.pull()[0].tag == 1
+        assert mem.pull() == []
+
+    def test_advance_by_stops_on_tag_quota(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path))
+        mem.submit(0x1000, False, tag=7)
+        mem.set_tag_quota(7, 1)
+        n = mem.advance_by(10_000, stop_on_tag_done=True)
+        assert 0 < n < 10_000
+        assert mem.pull()[0].tag == 7
+
+    def test_advance_until_in_flight_below_frees_credit(self, tmp_path):
         mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), outstanding_cap=8)
-        assert mem.submit_range(0x1000, 8, 64, False, tag=1) == 1
-        assert mem.submit_range(0x2000, 4, 64, False, tag=2) is None
+        assert mem.submit_range(0x1000, 8, 64, False, tag=1) == 8
+        assert mem.in_flight == 8
+        n = mem.advance_until_in_flight_below(8)
+        assert n > 0
+        assert mem.in_flight < 8
         mem.drain()
-        assert mem.submit_range(0x2000, 4, 64, False, tag=2) == 2
+
+    def test_advance_until_accept_when_full(self, tmp_path):
+        mem = Memory.from_config(
+            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path), frontend_queue=False
+        )
+        accepted = 0
+        while mem.submit(0x1000 + accepted * 64, False) is not None:
+            accepted += 1
+        assert accepted == mem.queue_size
+        assert mem.advance_until_accept(0x9000, False) > 0
+        assert mem.submit(0x9000, False) is not None
+        mem.drain()
+
+    def test_submit_range_zero_when_cap_full(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), outstanding_cap=8)
+        assert mem.submit_range(0x1000, 8, 64, False, tag=1) == 8
+        assert mem.submit_range(0x2000, 4, 64, False, tag=2) == 0
+        mem.drain()
+        assert mem.submit_range(0x2000, 4, 64, False, tag=2) == 4
 
     def test_no_frontend_independent_reject(self, tmp_path):
         mem = Memory.from_config(
@@ -382,10 +420,10 @@ class TestMemoryApi:
     def test_unbounded_advance_until_caps(self, tmp_path):
         cfg = str(configs_dir() / "HBM1_4Gb_x128.ini")
         e = SimEngine(cfg, str(tmp_path), True)
-        assert e.try_enqueue(0x1000, False, tag=1)
+        assert e.try_admit(0x1000, False, tag=1)
         n = e.advance_until((1 << 64) - 1, True, 5)
         assert n == 5
-        assert e.in_flight() == 1
+        assert e.in_flight == 1
         mem = Memory.from_config("HBM1_4Gb_x128", working_dir=str(tmp_path))
         mem.submit(0x1000, False)
         with pytest.raises(RuntimeError, match="advance_until"):
@@ -398,17 +436,21 @@ class TestMemoryApi:
         ch = mem.channel_of(0x1000)
         assert 0 <= ch < 8
         assert mem.will_accept(0x1000, False)
-        st = mem.debug_state()
+        st = mem.debug_state
+        assert isinstance(st, DebugState)
+        assert st.in_flight == 0
         assert st["in_flight"] == 0
         assert st["unmatched_callbacks"] == 0
+        assert mem.unmatched_callbacks == 0
+        assert mem.frontend_blocked_writes == 0
 
     def test_mixed_completion_order_matches_tick_one(self, tmp_path):
         def order_via_tick():
             e = _engine(tmp_path)
             for i in range(8):
-                assert e.try_enqueue(0x1000 + i * 64, i % 2 == 1, tag=i)
+                assert e.try_admit(0x1000 + i * 64, i % 2 == 1, tag=i)
             seen = []
-            while e.in_flight() > 0:
+            while e.in_flight > 0:
                 e.tick(1)
                 addrs, _, tags, _, writes = e.take_completions()
                 for addr, tag, is_wr in zip(addrs, tags, writes):
