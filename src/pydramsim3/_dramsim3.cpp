@@ -53,7 +53,7 @@ PYBIND11_MODULE(_dramsim3, m) {
            py::arg("is_write"), py::arg("tag") = 0,
            "Submit one transaction, optionally tagged with a request id "
            "that is returned with its completion event; returns False on "
-           "backpressure.")
+           "backpressure, outstanding_cap full, or an R→W alias hold.")
       .def(
           "tick",
           [](SimEngine& self, uint64_t cycles) -> uint64_t {

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aliases an in-flight read with `frontend_queue=False`).
   `advance_until_accept` now waits until `try_admit` would succeed, not
   only `WillAcceptTransaction`.
+- `try_admit` / no-frontend `submit` honor `outstanding_cap`, matching
+  `park`.  `replay` only credit-waits when the cap is actually full, so a
+  DRAM-queue or R→W reject cannot over-drain via
+  `advance_until_in_flight_below`.
 - `Memory.reset_stats` clears the `get_stats(refresh=False)` snapshot so
   the next read flushes the new stats epoch.
 

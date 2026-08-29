@@ -98,6 +98,12 @@ bool SimEngine::admitLocked(uint64_t addr, bool is_write, uint64_t tag,
 }
 
 bool SimEngine::tryAdmitLocked(uint64_t addr, bool is_write, uint64_t tag) {
+  // Same outstanding_cap window as park(): hosts without a frontend still
+  // get a hard credit limit.  canAdmitLocked intentionally omits the cap
+  // so advance_until_accept does not wait for credit.
+  if (atCapLocked()) {
+    return false;
+  }
   return admitLocked(addr, is_write, tag, cycle_);
 }
 

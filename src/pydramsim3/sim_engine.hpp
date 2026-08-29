@@ -198,7 +198,9 @@ class SimEngine {
   bool admitLocked(uint64_t addr, bool is_write, uint64_t tag,
                    uint64_t issue_cycle);
   bool readOutstandingLocked(uint64_t addr) const;
-  // True when tryAdmit would succeed (no R→W alias, DRAMsim3 accepts).
+  // True when a non-cap tryAdmit would succeed (no R→W alias, DRAMsim3
+  // accepts).  Omits outstanding_cap so advance_until_accept does not
+  // wait for host credit.
   bool canAdmitLocked(uint64_t addr, bool is_write) const;
   // Push onto the frontend and try to drain; assumes mutex_ is held.
   // Returns false when the outstanding cap is full.

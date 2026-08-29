@@ -183,6 +183,21 @@ class TestSimEngine:
         assert e.try_admit(addr, True)
         e.drain()
 
+    def test_try_admit_honors_outstanding_cap(self, tmp_path):
+        e = self._make(tmp_path)
+        e.outstanding_cap = 2
+        assert e.try_admit(0x1000, False)
+        assert e.try_admit(0x1040, False)
+        assert e.in_flight == 2
+        assert not e.try_admit(0x1080, False)
+        # Cap is not part of can-admit / advance_until_accept.
+        assert e.will_accept(0x1080, False)
+        assert e.advance_until_accept(0x1080, False) == 0
+        e.advance_until_in_flight_below(2)
+        assert e.in_flight < 2
+        assert e.try_admit(0x1080, False)
+        e.drain()
+
     def test_drain(self, tmp_path):
         e = self._make(tmp_path, collect=False)
         for i in range(16):
@@ -624,6 +639,30 @@ class TestReplay:
         cycles = mem.replay(trace)
         assert cycles > 0
         assert not mem.busy
+
+    def test_replay_outstanding_cap_without_frontend(self, tmp_path):
+        """Cap must bind try_admit; DRAM-queue rejects must not credit-wait."""
+        mem = Memory.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            frontend_queue=False,
+            outstanding_cap=4,
+        )
+        # More bursts than both the cap and the MC queue.
+        trace = [(0x1000 + i * 64, False) for i in range(40)]
+        cycles = mem.replay(trace)
+        assert cycles > 0
+        assert not mem.busy
+        # Never admitted past the cap (replay drains; check via a fresh fill).
+        mem2 = Memory.from_config(
+            "DDR4_8Gb_x8_2400",
+            working_dir=str(tmp_path),
+            frontend_queue=False,
+            outstanding_cap=4,
+        )
+        tags = [mem2.submit(0x2000 + i * 64, False) for i in range(8)]
+        assert sum(t is not None for t in tags) == 4
+        assert mem2.in_flight == 4
 
     def test_replay_timeout_raises(self, tmp_path):
         mem = Memory.from_config(

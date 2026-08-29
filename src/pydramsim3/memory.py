@@ -215,9 +215,9 @@ class Memory:
 
         With the default frontend queue the call returns a tag unless
         ``outstanding_cap`` is full (then ``None``).  Without the
-        frontend, returns None when DRAMsim3 will not accept this
-        address and direction (per-channel read/write queues); later
-        calls are independent.
+        frontend, returns None when the cap is full, a write aliases an
+        in-flight read, or DRAMsim3 will not accept this address and
+        direction; later calls are independent.
 
         Check the result with ``is not None``: tag ``0`` is valid and
         would look false in a bare ``if submit(...)``.
@@ -564,12 +564,14 @@ class Memory:
     ) -> int:
         """Submit a trace and drain.  Returns elapsed cycles.
 
-        Rejected submits wait until they can be issued: DRAM-queue /
-        R→W backpressure via :meth:`advance_until_accept`, or outstanding
-        credit via :meth:`advance_until_in_flight_below` when the cap is
-        full.  ``gap_cycles`` inserts idle DRAM clocks after each accepted
-        submit.  Raises ``RuntimeError`` if still backpressured or busy
-        after *max_cycles*.
+        Rejected submits wait until they can be issued.  When
+        ``outstanding_cap`` is full, wait for credit via
+        :meth:`advance_until_in_flight_below`.  Otherwise wait on
+        DRAM-queue / R→W backpressure via :meth:`advance_until_accept`
+        (do not credit-wait — that would over-drain when the reject was
+        not caused by the cap).  ``gap_cycles`` inserts idle DRAM clocks
+        after each accepted submit.  Raises ``RuntimeError`` if still
+        backpressured or busy after *max_cycles*.
         """
         start = self.current_cycle
         for entry in trace:
@@ -581,6 +583,8 @@ class Memory:
                 if remaining <= 0:
                     raise RuntimeError(f"replay: still backpressured after {max_cycles} cycles")
                 cap = self.outstanding_cap
+                # Cap is enforced by both park() and try_admit(); only then
+                # is in_flight >= cap the reject reason.
                 if cap > 0 and self.in_flight >= cap:
                     waited = self.advance_until_in_flight_below(cap, remaining)
                 else:
