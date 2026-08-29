@@ -170,9 +170,9 @@ part of the public API.
 
 Hot path in C++: submit, batched ticks, backpressure waits, outstanding
 tracking, per-transaction latency.  Completions export in bulk; the GIL
-is released on long runs.  The software frontend is sharded by
-`(channel, read/write)` so draining a deep queue is O(channels) per
-cycle, not O(frontend depth).
+is released on long runs.  The software frontend (wrapper-side only;
+DRAMsim3 is unchanged) is sharded by `(channel, read/write)` so draining
+a deep queue is O(channels) per cycle, not O(frontend depth).
 
 DDR4-2400, 100k mixed transactions, one thread
 (`benchmarks/benchmark.py`):

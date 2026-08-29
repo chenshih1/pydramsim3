@@ -12,7 +12,7 @@ SimEngine::SimEngine(const std::string& config_file,
           config_file, working_dir,
           [this](uint64_t addr) { onReadComplete(addr); },
           [this](uint64_t addr) { onWriteComplete(addr); })),
-      addr_cfg_(std::make_unique<dramsim3::Config>(config_file, working_dir)),
+      channel_map_(config_file),
       collect_events_(collect_events),
       clock_period_(0.0),
       queue_size_(0),
@@ -39,17 +39,15 @@ SimEngine::SimEngine(const std::string& config_file,
   }
   burst_size_ = static_cast<unsigned int>(bus) * static_cast<unsigned int>(burst) / 8;
 
-  if (addr_cfg_->channels <= 0) {
-    throw std::runtime_error("Failed to read DRAM channel count");
-  }
   // Two FIFOs per channel (read + write), matching DRAMsim3's separate
-  // per-channel read/write admission.
-  frontend_queues_.assign(static_cast<size_t>(addr_cfg_->channels) * 2,
+  // per-channel read/write admission.  Sharding lives entirely in the
+  // wrapper; DRAMsim3 itself is unchanged.
+  frontend_queues_.assign(static_cast<size_t>(channel_map_.channels()) * 2,
                           std::deque<PendingTxn>{});
 }
 
 size_t SimEngine::frontendIndex(uint64_t addr, bool is_write) const {
-  const int channel = addr_cfg_->AddressMapping(addr).channel;
+  const int channel = channel_map_.channelOf(addr);
   return static_cast<size_t>(channel) * 2u + (is_write ? 1u : 0u);
 }
 

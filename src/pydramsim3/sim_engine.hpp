@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "configuration.h"
+#include "channel_map.hpp"
 #include "dramsim3.h"
 
 // SimEngine owns the full DRAM hot loop:
@@ -178,9 +178,10 @@ class SimEngine {
   void noteTagLocked(uint64_t tag);
 
   std::unique_ptr<dramsim3::MemorySystem> dramsim_;
-  // Address mapping only (channel extraction for frontend sharding).
-  // Separate from MemorySystem's own Config so we do not reach into it.
-  std::unique_ptr<dramsim3::Config> addr_cfg_;
+  // Wrapper-owned channel extraction for frontend sharding.  Does not
+  // modify or include DRAMsim3 internals; parses the same .ini the
+  // MemorySystem already consumed.
+  ChannelMap channel_map_;
 
   // Cycle counter; incremented *after* each ClockTick so that completion
   // callbacks observe the cycle at which the completion occurs, matching
