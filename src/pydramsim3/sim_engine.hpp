@@ -50,7 +50,8 @@ class SimEngine {
                     uint64_t gap_cycles, uint64_t max_drain_cycles);
 
   // Tick until the next tryAdmit(addr, is_write) would succeed
-  // (DRAMsim3 WillAcceptTransaction for that address and direction), or
+  // (no write aliasing an in-flight read, and DRAMsim3
+  // WillAcceptTransaction for that address and direction), or
   // max_cycles is exhausted.  Returns the number of cycles executed.
   // Used to absorb backpressure waits inside C++ instead of ping-ponging
   // across Python.
@@ -197,6 +198,8 @@ class SimEngine {
   bool admitLocked(uint64_t addr, bool is_write, uint64_t tag,
                    uint64_t issue_cycle);
   bool readOutstandingLocked(uint64_t addr) const;
+  // True when tryAdmit would succeed (no R→W alias, DRAMsim3 accepts).
+  bool canAdmitLocked(uint64_t addr, bool is_write) const;
   // Push onto the frontend and try to drain; assumes mutex_ is held.
   // Returns false when the outstanding cap is full.
   bool parkLocked(uint64_t addr, bool is_write, uint64_t tag);

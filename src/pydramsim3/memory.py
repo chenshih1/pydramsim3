@@ -418,9 +418,11 @@ class Memory:
         is_write: bool | RequestType = False,
         max_cycles: int = _MAX_CYCLES,
     ) -> int:
-        """Tick until this address and direction would be accepted.
+        """Tick until :meth:`submit` without a frontend would succeed.
 
-        Completions stay until :meth:`pull`.
+        Completions stay until :meth:`pull`.  Waits out DRAM-queue
+        backpressure and a write that aliases an in-flight read; does
+        not wait for ``outstanding_cap`` credit.
         """
         return int(self._engine.advance_until_accept(int(addr), bool(is_write), int(max_cycles)))
 
@@ -562,11 +564,12 @@ class Memory:
     ) -> int:
         """Submit a trace and drain.  Returns elapsed cycles.
 
-        With ``frontend_queue=False``, waits until DRAMsim3 will accept
-        this address and direction instead of dropping rejected submits.
-        ``gap_cycles`` inserts idle DRAM clocks after each accepted submit.
-        Raises ``RuntimeError`` if still backpressured or busy after
-        *max_cycles*.
+        Rejected submits wait until they can be issued: DRAM-queue /
+        R→W backpressure via :meth:`advance_until_accept`, or outstanding
+        credit via :meth:`advance_until_in_flight_below` when the cap is
+        full.  ``gap_cycles`` inserts idle DRAM clocks after each accepted
+        submit.  Raises ``RuntimeError`` if still backpressured or busy
+        after *max_cycles*.
         """
         start = self.current_cycle
         for entry in trace:
@@ -577,7 +580,13 @@ class Memory:
                 remaining = max_cycles - (self.current_cycle - start)
                 if remaining <= 0:
                     raise RuntimeError(f"replay: still backpressured after {max_cycles} cycles")
-                self.advance_until_accept(addr, is_write, remaining)
+                cap = self.outstanding_cap
+                if cap > 0 and self.in_flight >= cap:
+                    waited = self.advance_until_in_flight_below(cap, remaining)
+                else:
+                    waited = self.advance_until_accept(addr, is_write, remaining)
+                if waited == 0:
+                    self.tick(1)
             if gap_cycles:
                 self.tick(gap_cycles)
         remaining = max_cycles - (self.current_cycle - start)
@@ -648,6 +657,7 @@ class Memory:
     def reset_stats(self) -> None:
         """Reset all accumulated statistics."""
         self._engine.reset_stats()
+        self._stats_cache = None
 
     def _stall_detail(self) -> str:
         st = self.debug_state

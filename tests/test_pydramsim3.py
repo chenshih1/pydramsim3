@@ -170,6 +170,19 @@ class TestSimEngine:
         e = self._make(tmp_path)
         assert e.advance_until_accept(0x1000, False) == 0
 
+    def test_advance_until_accept_waits_out_raw_write(self, tmp_path):
+        """WillAccept can be true while try_admit rejects a write that aliases
+        an in-flight read; the wait must still advance until the read completes."""
+        e = self._make(tmp_path)
+        addr = 0x1000
+        assert e.try_admit(addr, False)
+        assert e.will_accept(addr, True)
+        assert not e.try_admit(addr, True)
+        n = e.advance_until_accept(addr, True)
+        assert n > 0
+        assert e.try_admit(addr, True)
+        e.drain()
+
     def test_drain(self, tmp_path):
         e = self._make(tmp_path, collect=False)
         for i in range(16):
@@ -523,6 +536,14 @@ class TestMemoryStats:
         stats = mem.get_stats()
         assert stats["0"]["num_reads_done"] == 0
 
+    def test_reset_stats_invalidates_refresh_false_cache(self, mem):
+        before = mem.get_stats()
+        assert before["0"]["num_reads_done"] == 16
+        mem.reset_stats()
+        after = mem.get_stats(refresh=False)
+        assert after is not before
+        assert after["0"]["num_reads_done"] == 0
+
 
 class TestMemoryContextManager:
     def test_with_statement(self, tmp_path):
@@ -586,6 +607,22 @@ class TestReplay:
         )
         trace = [(0x1000 + i * 64, False) for i in range(100)]
         mem.replay(trace)
+        assert not mem.busy
+
+    def test_replay_raw_without_frontend(self, tmp_path):
+        mem = Memory.from_config(
+            "DDR4_8Gb_x8_2400", working_dir=str(tmp_path), frontend_queue=False
+        )
+        addr = 0x1000
+        cycles = mem.replay([(addr, False), (addr, True)])
+        assert cycles > 0
+        assert not mem.busy
+
+    def test_replay_outstanding_cap(self, tmp_path):
+        mem = Memory.from_config("DDR4_8Gb_x8_2400", working_dir=str(tmp_path), outstanding_cap=8)
+        trace = [(0x1000 + i * 64, False) for i in range(40)]
+        cycles = mem.replay(trace)
+        assert cycles > 0
         assert not mem.busy
 
     def test_replay_timeout_raises(self, tmp_path):

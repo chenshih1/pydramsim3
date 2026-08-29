@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Memory.replay` no longer livelocks when `submit` fails for reasons other
+  than DRAM-queue backpressure (`outstanding_cap` full, or a write that
+  aliases an in-flight read with `frontend_queue=False`).
+  `advance_until_accept` now waits until `try_admit` would succeed, not
+  only `WillAcceptTransaction`.
+- `Memory.reset_stats` clears the `get_stats(refresh=False)` snapshot so
+  the next read flushes the new stats epoch.
+
 ## [0.5.0] - 2026-08-26
 
 ### Added

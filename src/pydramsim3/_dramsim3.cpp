@@ -85,7 +85,7 @@ PYBIND11_MODULE(_dramsim3, m) {
            py::arg("addr"), py::arg("is_write"),
            py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
-           "Tick until DRAMsim3 will accept try_admit(addr, is_write); "
+           "Tick until try_admit(addr, is_write) would succeed; "
            "returns cycles used.")
       .def("advance_until_completion", &SimEngine::advanceUntilCompletion,
            py::arg("max_cycles") = 10000000,

@@ -101,6 +101,13 @@ bool SimEngine::tryAdmitLocked(uint64_t addr, bool is_write, uint64_t tag) {
   return admitLocked(addr, is_write, tag, cycle_);
 }
 
+bool SimEngine::canAdmitLocked(uint64_t addr, bool is_write) const {
+  if (is_write && readOutstandingLocked(addr)) {
+    return false;
+  }
+  return dramsim_->WillAcceptTransaction(addr, is_write);
+}
+
 uint64_t SimEngine::tick(uint64_t cycles) {
   std::lock_guard<std::mutex> lock(mutex_);
   AdvanceSpec spec;
@@ -386,7 +393,7 @@ uint64_t SimEngine::advanceLocked(const AdvanceSpec& spec) {
       break;
     }
     if (spec.stop_on_accept &&
-        dramsim_->WillAcceptTransaction(spec.accept_addr, spec.accept_write)) {
+        canAdmitLocked(spec.accept_addr, spec.accept_write)) {
       break;
     }
     tickOnceLocked();
