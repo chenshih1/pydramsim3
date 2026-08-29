@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 #include "sim_engine.hpp"
@@ -43,16 +44,16 @@ PYBIND11_MODULE(_dramsim3, m) {
   // High-performance engine: the hot loop (submission, backpressure waits,
   // batching, outstanding tracking, per-transaction latency) lives entirely
   // in C++.  Completions are exported in bulk via take_completions().
-  // tick()/drain()/tick_until_capacity()/run_trace() release the GIL.
+  // tick()/drain()/advance_until_accept()/run_trace() release the GIL.
   py::class_<SimEngine>(m, "SimEngine")
       .def(py::init<const std::string&, const std::string&, bool>(),
            py::arg("config_file"), py::arg("working_dir"),
            py::arg("collect_events") = true)
-      .def("try_enqueue", &SimEngine::tryEnqueue, py::arg("addr"),
+      .def("try_admit", &SimEngine::tryAdmit, py::arg("addr"),
            py::arg("is_write"), py::arg("tag") = 0,
            "Submit one transaction, optionally tagged with a request id "
            "that is returned with its completion event; returns False on "
-           "backpressure.")
+           "backpressure, outstanding_cap full, or an R→W alias hold.")
       .def(
           "tick",
           [](SimEngine& self, uint64_t cycles) -> uint64_t {
@@ -69,13 +70,24 @@ PYBIND11_MODULE(_dramsim3, m) {
       .def("drain", &SimEngine::drain, py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
            "Tick until controller and frontend are idle; returns cycles used.")
-      .def("tick_until_capacity", &SimEngine::tickUntilCapacity,
+      .def(
+          "advance_until_in_flight_below",
+          [](SimEngine& self, uint64_t cap, uint64_t max_cycles) {
+            if (max_cycles >= 64) {
+              py::gil_scoped_release release;
+              return self.advanceUntilInFlightBelow(cap, max_cycles);
+            }
+            return self.advanceUntilInFlightBelow(cap, max_cycles);
+          },
+          py::arg("cap"), py::arg("max_cycles") = 10000000,
+          "Tick until in-flight is below cap, idle, or max_cycles.")
+      .def("advance_until_accept", &SimEngine::advanceUntilAccept,
            py::arg("addr"), py::arg("is_write"),
            py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
-           "Tick until DRAMsim3 will accept try_enqueue(addr, is_write); "
+           "Tick until try_admit(addr, is_write) would succeed; "
            "returns cycles used.")
-      .def("tick_until_completion", &SimEngine::tickUntilCompletion,
+      .def("advance_until_completion", &SimEngine::advanceUntilCompletion,
            py::arg("max_cycles") = 10000000,
            py::call_guard<py::gil_scoped_release>(),
            "Tick until the next read or write completion; returns cycles used.")
@@ -84,21 +96,78 @@ PYBIND11_MODULE(_dramsim3, m) {
            py::call_guard<py::gil_scoped_release>(),
            "Tick until current_cycle reaches target_cycle; optionally stop "
            "at the first new completion.  Returns cycles used.")
-      .def("advance_until", &SimEngine::advanceUntil, py::arg("target_cycle"),
-           py::arg("stop_on_tag_done") = true,
-           py::call_guard<py::gil_scoped_release>(),
-           "Tick until target_cycle (UINT64_MAX = no deadline).  With "
-           "stop_on_tag_done, return when a set_tag_quota counter hits "
-           "zero so the host can issue follow-up requests.")
+      .def(
+          "advance_until",
+          [](SimEngine& self, uint64_t target_cycle, bool stop_on_tag_done,
+             uint64_t max_cycles) {
+            constexpr uint64_t kGilReleaseTicks = 64;
+            const uint64_t now = self.currentCycle();
+            const bool long_run =
+                target_cycle == std::numeric_limits<uint64_t>::max() ||
+                target_cycle > now + kGilReleaseTicks;
+            if (long_run) {
+              py::gil_scoped_release release;
+              return self.advanceUntil(target_cycle, stop_on_tag_done,
+                                       max_cycles);
+            }
+            return self.advanceUntil(target_cycle, stop_on_tag_done,
+                                     max_cycles);
+          },
+          py::arg("target_cycle"), py::arg("stop_on_tag_done") = true,
+          py::arg("max_cycles") = 10000000,
+          "Tick until target_cycle (UINT64_MAX = no deadline).  Unbounded "
+          "jumps also stop after max_cycles (0 = no cap).  Finite deadlines "
+          "ignore max_cycles.  With stop_on_tag_done, return when a "
+          "set_tag_quota counter hits zero.")
+      .def(
+          "advance_by",
+          [](SimEngine& self, uint64_t cycles, bool stop_on_tag_done) {
+            if (cycles >= 64) {
+              py::gil_scoped_release release;
+              return self.advanceBy(cycles, stop_on_tag_done);
+            }
+            return self.advanceBy(cycles, stop_on_tag_done);
+          },
+          py::arg("cycles"), py::arg("stop_on_tag_done") = true,
+          "Tick up to *cycles* from now; same stop_on_tag_done rules as "
+          "advance_until.  Returns cycles executed.")
       .def("set_tag_quota", &SimEngine::setTagQuota, py::arg("tag"),
            py::arg("remaining"),
            "Remaining bursts for a logical request tag; 0 clears it.")
-      .def("enqueue", &SimEngine::enqueue, py::arg("addr"),
+      .def("park", &SimEngine::park, py::arg("addr"),
            py::arg("is_write"), py::arg("tag") = 0,
-           "Always-succeeding submit: park on a frontend queue if the "
-           "controller is full.  Latency is measured from this call.")
-      .def("frontend_size", &SimEngine::frontendSize,
-           "Number of transactions waiting on the software frontend queue.")
+           "Park on a frontend queue if the controller is full.  Returns "
+           "False when outstanding_cap is full.  Latency is measured from "
+           "this call.")
+      .def("park_range", &SimEngine::parkRange, py::arg("addr"),
+           py::arg("count"), py::arg("stride"), py::arg("is_write"),
+           py::arg("tag") = 0, py::call_guard<py::gil_scoped_release>(),
+           "Park up to count bursts at addr, addr+stride, ... then drain "
+           "once.  Returns how many were parked.")
+      .def_property("outstanding_cap", &SimEngine::outstandingCap,
+                    &SimEngine::setOutstandingCap,
+                    "Finite in-flight window (controller + frontend).  "
+                    "0 = unbounded.")
+      .def_property_readonly("num_channels", &SimEngine::numChannels,
+                             "DRAMsim3 channel count from the .ini.")
+      .def_property_readonly("memory_size", &SimEngine::memorySize,
+                             "Mapped address space in bytes (channels × "
+                             "channel_size).")
+      .def("channel_of", &SimEngine::channelOf, py::arg("addr"),
+           "DRAMsim3 channel index for this byte address.")
+      .def("will_accept", &SimEngine::willAccept, py::arg("addr"),
+           py::arg("is_write"),
+           "DRAMsim3 WillAcceptTransaction for this address and direction.")
+      .def_property_readonly("unmatched_callbacks",
+                             &SimEngine::unmatchedCallbacks,
+                             "Completion callbacks whose addr was not in the "
+                             "outstanding map.")
+      .def_property_readonly(
+          "frontend_blocked_writes", &SimEngine::frontendBlockedWrites,
+          "Parked writes waiting because a read to the same addr is in flight.")
+      .def_property_readonly(
+          "frontend_size", &SimEngine::frontendSize,
+          "Number of transactions waiting on the software frontend queue.")
       .def(
           "run_trace",
           [](SimEngine& self, U64Array addrs, BoolArray writes,
@@ -143,11 +212,13 @@ PYBIND11_MODULE(_dramsim3, m) {
       .def("take_completions", &SimEngine::takeCompletions,
            "Return and clear all completions in callback order as "
            "(addr, latency, tag, complete_cycle, is_write) lists.")
-      .def("num_outstanding", &SimEngine::numOutstanding)
-      .def("in_flight", &SimEngine::inFlight,
-           "DRAMsim3 outstanding plus frontend queue depth.")
-      .def("num_outstanding_reads", &SimEngine::numOutstandingReads)
-      .def("num_outstanding_writes", &SimEngine::numOutstandingWrites)
+      .def_property_readonly("num_outstanding", &SimEngine::numOutstanding)
+      .def_property_readonly("in_flight", &SimEngine::inFlight,
+                             "DRAMsim3 outstanding plus frontend queue depth.")
+      .def_property_readonly("num_outstanding_reads",
+                             &SimEngine::numOutstandingReads)
+      .def_property_readonly("num_outstanding_writes",
+                             &SimEngine::numOutstandingWrites)
       .def_property_readonly("current_cycle", &SimEngine::currentCycle,
                              "Absolute simulation cycle (engine clock).")
       .def("print_stats", &SimEngine::printStats)

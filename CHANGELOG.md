@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Memory.replay` no longer livelocks when `submit` fails for reasons other
+  than DRAM-queue backpressure (`outstanding_cap` full, or a write that
+  aliases an in-flight read with `frontend_queue=False`).
+  `advance_until_accept` now waits until `try_admit` would succeed, not
+  only `WillAcceptTransaction`.
+- `try_admit` / no-frontend `submit` honor `outstanding_cap`, matching
+  `park`.  `replay` only credit-waits when the cap is actually full, so a
+  DRAM-queue or R→W reject cannot over-drain via
+  `advance_until_in_flight_below`.
+- `Memory.reset_stats` clears the `get_stats(refresh=False)` snapshot so
+  the next read flushes the new stats epoch.
+
+## [0.5.0] - 2026-08-26
+
+### Added
+
+- Lockstep time primitives on `Memory`: `tick`, `advance_by`,
+  `advance_until_completion`, `advance_until_in_flight_below`,
+  `advance_until_accept`.  These return cycle counts and leave
+  completions for `pull()`, so a DES host does not need `SimEngine`.
+  `wait` / `advance_to` / `advance_until` / `drain` still return events.
+- `Memory.unmatched_callbacks` and `Memory.frontend_blocked_writes`
+  properties (already in `debug_state`).
+- `DebugState` named tuple for `debug_state` (still dict-indexable).
+
+### Changed
+
+Breaking rename (no aliases).  Stay on `v0.4.4` if you need the old names.
+
+- Issue verbs: C++ `tryAdmit` / `park` / `parkRange` (Python `try_admit` /
+  `park` / `park_range`).  `Memory.submit` is unchanged.  `submit_range`
+  returns how many bursts were parked (`0` if none).  `Memory.park_range`
+  is removed.
+- Time verbs: `advanceUntilCompletion` / `advanceUntilAccept` (Python
+  `advance_until_completion` / `advance_until_accept`).  `tick`,
+  `advance_to` / `until` / `by`, `drain`, and `wait` are unchanged.
+- Zero-arg occupancy queries are properties: `in_flight`, `frontend_size`,
+  `num_outstanding*`, `unmatched_callbacks`, `frontend_blocked_writes`,
+  `outstanding_cap`.  `Memory.debug_state` is a property.
+- Types: `PendingTransaction`, `Completion`; `frontend_queues_`.
+- Include guard `PYDRAMSIM3_SIM_ENGINE_HPP`.
+- `Memory` source is grouped by role (issue, event loop, lockstep,
+  occupancy).  `debug_state` returns `DebugState`.
+- Internal: host time primitives share one `advanceLocked` stop-predicate
+  loop (`has_target` rather than a UINT64_MAX sentinel).  Public names
+  and stop semantics are unchanged.
+
+### Fixed
+
+- Ruff ignores vendored `third_party/` and Markdown, so `ruff check .`
+  / `ruff format --check .` match the development docs.
+
+### Removed
+
+- `Memory.stats`.  Use `get_stats` / `print_stats` / `reset_stats`.
+
+## [0.4.4] - 2026-08-26
+
+### Added
+
+- Stall diagnostics: `Memory.debug_state()`, `unmatched_callbacks`,
+  `frontend_blocked_writes`, `will_accept(addr, is_write)`.  `wait` /
+  `drain` / unbounded `advance_until` errors include this snapshot.
+- Physical map: `Memory.memory_size` (bytes) and `Memory.channel_of(addr)`,
+  from the same `.ini` mapping DRAMsim3 uses.  Hosts should wrap or
+  allocate inside this space; tracking keys are full host addresses.
+- `get_stats(refresh=False)` returns the last JSON snapshot without
+  asking DRAMsim3 to rewrite the file (avoids extra idle-energy
+  accumulation).  Default `refresh=True` is unchanged.
+
+### Changed
+
+- Unbounded `advance_until(None)` / `advanceUntil(UINT64_MAX)` stops
+  after `max_cycles` (default 10 million; `0` disables the cap).
+  Finite lockstep deadlines still ignore this cap.
+- Frontend write drain skips only a write whose address has an
+  outstanding read; later writes on that channel may still enter
+  DRAMsim3 (avoids HOL-stalling the whole write queue).
+- `busy` / `in_flight` are documented as callback-tracked occupancy.
+  Posted writes can remain in DRAMsim3 write buffers after `in_flight`
+  drops.
+
+### Fixed
+
+- Unmatched DRAMsim3 callbacks are counted instead of dropped silently
+  (ghost `in_flight` was a DES empty-heap hang).
+
+## [0.4.3] - 2026-08-25
+
+### Added
+
+- Finite outstanding window: `Memory(outstanding_cap=...)` /
+  `SimEngine.set_outstanding_cap`.  `0` (default) keeps unbounded
+  parking.  `"hw"` is `channels * trans_queue_size + channels` (HBM1:
+  264 bursts).  `enqueue` / `enqueue_range` / `park_range` refuse more
+  traffic when the window is full; the host must tick until a
+  completion frees a credit.  Per-channel HOL bypass of already-queued
+  requests is unchanged.
+- `Memory.park_range`, `Memory.in_flight`, `Memory.num_channels`.
+- `SimEngine.advance_until_in_flight_below(cap)` ticks until the
+  in-flight count drops below *cap* (credit wait for a DES host).
+
+## [0.4.2] - 2026-08-25
+
+### Changed
+
+- Frontend drain is per-(channel, read/write) FIFO heads admitted in
+  global enqueue order.  Same HOL bypass as 0.4.1 (a blocked channel
+  does not stall a free one), but each `ClockTick` is O(channels) instead
+  of scanning the whole parked queue.  Channel index is taken from the
+  `.ini` via `dramsim3::Config` (identical to `BaseDRAMSystem::GetChannel`);
+  the vendored DRAMsim3 sources are unchanged.
+- `Memory.submit_range` / `SimEngine.enqueue_range` park a burst stream
+  and drain once (same admission order as repeated `submit`/`enqueue`
+  with no clock tick in between).
+- `SimEngine.advance_by(n)` ticks up to *n* cycles from now (used by
+  tight DES hosts).  `advance_until` / `advance_by` only release the
+  GIL when the jump is at least 64 ticks, so 1-tick host gaps do not
+  pay a GIL round-trip per DRAM cycle.
+
 ## [0.4.1] - 2026-08-25
 
 ### Added

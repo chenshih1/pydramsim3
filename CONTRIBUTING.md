@@ -3,11 +3,24 @@
 Thanks for your interest in PyDRAMsim3.  The project is small and
 research-oriented.
 
-The public host is `Memory` (`src/pydramsim3/memory.py`): discrete-event
-`submit` / `wait` / `drain`.  The C++ hot loop is
-`src/pydramsim3/sim_engine.{hpp,cpp}`; pybind11 is
-`src/pydramsim3/_dramsim3.cpp`.  Python names are snake_case, C++ names
-camelCase, one-to-one.
+The public host is `Memory` (`src/pydramsim3/memory.py`): `submit`, then
+either an event loop (`wait` / `drain`, returns completions) or lockstep
+(`tick` / `advance_until_completion`, returns cycles; `pull()` for
+events).  The C++ hot loop is `src/pydramsim3/sim_engine.{hpp,cpp}`;
+pybind11 is `src/pydramsim3/_dramsim3.cpp`.  Python names are snake_case,
+C++ names camelCase, one-to-one:
+
+| Role | C++ | Python (`SimEngine`) | `Memory` |
+|---|---|---|---|
+| Admit one burst | `tryAdmit` | `try_admit` | `submit` (`frontend_queue=False`) |
+| Park one burst | `park` | `park` | `submit` (default) |
+| Park a burst stream | `parkRange` | `park_range` | `submit_range` (returns parked count) |
+| Event-loop wrap | `advanceTo` / `advanceUntil` / `drain` | same snake_case (return cycles) | `wait` / `advance_to` / `advance_until` / `drain` (return completions) |
+| Lockstep tick | `tick` / `advanceBy` / `advanceUntilCompletion` / `advanceUntilInFlightBelow` / `advanceUntilAccept` | same snake_case | same names (return cycles; `pull` separately) |
+| Occupancy | `inFlight` / … | properties (`in_flight`, …) | same names |
+
+Zero-arg engine queries are properties.  Methods that take arguments stay
+methods (`will_accept`, `channel_of`).
 
 The last cycle-driven `MemoryController` tree is branch `0.3.0`.
 

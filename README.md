@@ -6,10 +6,11 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Typing](https://img.shields.io/badge/typing-typed-228B22)](https://github.com/chenshih1/pydramsim3/blob/master/src/pydramsim3/py.typed)
 
-Python host for [DRAMsim3](https://github.com/umd-memsys/DRAMsim3).  The
-public API is discrete-event (`submit`, then `wait` / `advance_to` /
-`drain`); Python wakes on completions.  DRAMsim3 itself still runs
-cycle-accurately in C++.
+Python host for [DRAMsim3](https://github.com/umd-memsys/DRAMsim3).
+The public API is `Memory`: `submit`, then either an **event loop**
+(`wait` / `advance_to` / `drain` — returns completions) or **lockstep**
+(`tick` / `advance_by` — returns cycle counts; `pull()` for events).
+DRAMsim3 itself still runs cycle-accurately in C++.
 
 Use it to drop a timing-accurate DRAM model into a CPU, GPU, or
 accelerator simulator and read per-request latency, energy, and
@@ -39,7 +40,7 @@ Sdists are on
 [GitHub Releases](https://github.com/chenshih1/pydramsim3/releases):
 
 ```bash
-pip install pydramsim3-0.4.1.tar.gz
+pip install pydramsim3-0.5.0.tar.gz
 ```
 
 Release builds use LTO and link DRAMsim3 statically.  CI is Linux; any
@@ -73,27 +74,42 @@ temporary directory removed on `close()` / `with` / GC.
 
 ## Host model
 
-| Call | What it does |
-|---|---|
-| `submit(addr, is_write, tag=None)` | Issue one burst.  Returns a tag.  Check `is not None` — tag `0` is valid. |
-| `wait()` | Tick in C++ until the next completion (or idle). |
-| `advance_to(t)` | Tick to a host deadline; default `stop_on_completion=True`. |
-| `advance_until(t, stop_on_tag_done=True)` | Tick to a deadline, or until a `set_tag_quota` counter hits zero. `t=None` means no deadline. |
-| `set_tag_quota(tag, n)` | Remaining bursts for a logical request. Completions decrement it. |
-| `pull()` | Return completions already collected (no ticking). |
-| `drain()` | Tick until controller and frontend are idle. |
-| `completions()` | `wait` until idle, yield each `Completion`. |
+Time advances in two ways.  **Event loop** methods return `Completion`
+lists.  **Lockstep** methods return cycle counts; call `pull()` for
+events.
 
-`wait` / `drain` raise `RuntimeError` if still busy after `max_cycles`
-(default 10 million).
+| Call | Returns |
+|---|---|
+| `submit(addr, is_write, tag=None)` | Tag, or `None` if rejected.  Check `is not None` — tag `0` is valid. |
+| `submit_range(addr, count, stride, is_write, tag=None)` | How many bursts were parked. |
+| `wait()` / `advance_to(t)` / `advance_until(t)` / `drain()` | Completions (event loop) |
+| `tick(n)` / `advance_by(n)` / `advance_until_completion` / `advance_until_in_flight_below` / `advance_until_accept` | Cycles (lockstep) |
+| `set_tag_quota(tag, n)` | — remaining bursts for a logical request |
+| `pull()` | Completions already collected (no ticking) |
+| `debug_state` | `DebugState` stall snapshot |
+| `completions()` | `wait` until idle, yield each `Completion` |
+
+`wait` / `drain` / unbounded `advance_until` raise `RuntimeError` if still
+busy after `max_cycles` (default 10 million).  The message includes
+`debug_state`.
 
 **Backpressure.** `queue_size` is DRAMsim3's per-channel
 `trans_queue_size`, not a global cap — each channel has separate read
-and write queues.  Default `frontend_queue=True`: `submit` always
-succeeds and parks overflow in C++ (unbounded; `wait` / `drain` so it
-does not grow forever).  `frontend_queue=False`: `submit` returns
-`None` when that address and direction are not accepted; a later call
-to a free queue can still succeed.
+and write queues.  `outstanding_cap="hw"` is
+`channels × trans_queue_size + channels`.  Default `frontend_queue=True`:
+`submit` parks overflow in C++ until the outstanding window is full.
+`frontend_queue=False`: `submit` returns `None` when that address and
+direction are not accepted; a later call to a free queue can still succeed.
+
+A write to an address with an in-flight read stays on the frontend until
+that read completes (DRAMsim3 deadlocks if the write buffer fills while
+its head matches a pending read).  Later writes on the same channel are
+not HOL-blocked.
+
+**Posted writes.** DRAMsim3 completes writes one cycle after accept.
+`busy` / `in_flight` follow those callbacks, not the write buffer.
+`will_accept(addr, True)` is False while that channel's write buffer is
+full.
 
 **`Completion`:** `addr`, `latency`, `tag`, `is_write`, `cycle`
 (engine clock after the ClockTick that produced the event).
@@ -134,26 +150,37 @@ ch0["total_energy"]          # pJ
 ch0["average_power"]         # mW
 ch0["average_bandwidth"]
 ch0["read_latency"]          # {cycles: count}
+mem.get_stats(refresh=False) # last snapshot; no extra idle energy
 mem.stats_json_path          # working_dir/dramsim3.json
 ```
 
 ## API
 
 ```python
-Memory(config_file, working_dir=None, *, frontend_queue=True, burst_size=None)
-Memory.from_config(config_name, working_dir=None, *, frontend_queue=True, burst_size=None)
+Memory(config_file, working_dir=None, *, frontend_queue=True, outstanding_cap=None, burst_size=None)
+Memory.from_config(config_name, working_dir=None, *, frontend_queue=True, outstanding_cap=None, burst_size=None)
 ```
 
 | | Role |
 |---|---|
-| `submit` / `wait` / `advance_to` / `pull` / `drain` / `completions` | Event loop |
+| `submit` / `wait` / `advance_to` / `advance_until` / `pull` / `drain` / `completions` | Event loop (returns `Completion`s) |
+| `tick` / `advance_by` / `advance_until_completion` / `advance_until_in_flight_below` / `advance_until_accept` | Lockstep (returns cycles; `pull` separately) |
 | `replay` / `run_trace` | Closed traces |
-| `get_stats` / `print_stats` / `reset_stats` / `stats` | DRAMsim3 JSON |
+| `get_stats` / `print_stats` / `reset_stats` | DRAMsim3 JSON |
 | `close()` | Drop the engine; delete a default temp `working_dir` |
 
-**Properties:** `busy`, `current_cycle`, `clock_period`, `queue_size`,
-`burst_size`, `frontend_size`, `num_outstanding`,
-`num_outstanding_reads`, `num_outstanding_writes`.
+**Occupancy**
+
+| Property | Meaning |
+|---|---|
+| `busy` / `in_flight` | DRAMsim3 outstanding + frontend (posted writes drop on the completion callback, one cycle after accept) |
+| `num_outstanding*` | DRAMsim3 only (excludes frontend) |
+| `queue_size` | Per-channel `trans_queue_size` |
+| `outstanding_cap` | Admit window (`"hw"` or an int) |
+
+Also: `current_cycle`, `clock_period`, `burst_size`, `frontend_size`,
+`num_channels`, `memory_size`, `debug_state`, `unmatched_callbacks`,
+`frontend_blocked_writes`.
 
 Supports `with`.  Module helpers: `configs_dir()`, `list_configs()`,
 `resolve_config(name)`.
