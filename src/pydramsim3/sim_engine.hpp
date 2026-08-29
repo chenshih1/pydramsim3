@@ -5,12 +5,12 @@
 #include <deque>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <string>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
 
+#include "configuration.h"
 #include "dramsim3.h"
 
 // SimEngine owns the full DRAM hot loop:
@@ -148,6 +148,10 @@ class SimEngine {
     uint64_t tag;
     uint64_t issue_cycle;
   };
+  struct OutstandingTxn {
+    uint64_t issue_cycle;
+    uint64_t tag;
+  };
 
   void onReadComplete(uint64_t addr);
   void onWriteComplete(uint64_t addr);
@@ -162,26 +166,30 @@ class SimEngine {
                    uint64_t issue_cycle);
   // Push onto the frontend and try to drain; assumes mutex_ is held.
   void enqueueLocked(uint64_t addr, bool is_write, uint64_t tag);
-  // Move parked frontend transactions into DRAMsim3.  Per-channel
-  // blocking does not stall later requests to a free channel.
+  // Move parked frontend transactions into DRAMsim3.  Per-(channel,
+  // direction) queues give HOL bypass without scanning the full frontend
+  // each cycle: a blocked write does not stall reads or other channels.
   void drainFrontendLocked();
+  // Index into frontend_queues_ for (channel(addr), is_write).
+  size_t frontendIndex(uint64_t addr, bool is_write) const;
   // Advances one cycle; assumes mutex_ is held.
   void tickOnceLocked();
   uint64_t inFlightLocked() const;
   void noteTagLocked(uint64_t tag);
 
   std::unique_ptr<dramsim3::MemorySystem> dramsim_;
+  // Address mapping only (channel extraction for frontend sharding).
+  // Separate from MemorySystem's own Config so we do not reach into it.
+  std::unique_ptr<dramsim3::Config> addr_cfg_;
 
   // Cycle counter; incremented *after* each ClockTick so that completion
   // callbacks observe the cycle at which the completion occurs, matching
   // DRAMsim3's internal clk_ semantics.
   uint64_t cycle_ = 0;
 
-  // Per-address FIFO of (issue_cycle, tag) for in-flight transactions.
-  std::unordered_map<uint64_t, std::queue<std::pair<uint64_t, uint64_t>>>
-      outstanding_reads_;
-  std::unordered_map<uint64_t, std::queue<std::pair<uint64_t, uint64_t>>>
-      outstanding_writes_;
+  // Per-address FIFO of in-flight transactions.
+  std::unordered_map<uint64_t, std::deque<OutstandingTxn>> outstanding_reads_;
+  std::unordered_map<uint64_t, std::deque<OutstandingTxn>> outstanding_writes_;
   uint64_t num_outstanding_reads_ = 0;
   uint64_t num_outstanding_writes_ = 0;
 
@@ -193,8 +201,11 @@ class SimEngine {
   std::unordered_map<uint64_t, uint64_t> tag_quota_;
   bool tag_done_ = false;
 
-  // Software frontend: always-succeeding enqueue for DES hosts.
-  std::deque<PendingTxn> frontend_;
+  // Software frontend: one FIFO per (channel, direction).  Index
+  // 2*channel + is_write.  Preserves FIFO within a queue while giving
+  // free queues HOL bypass over blocked ones.
+  std::vector<std::deque<PendingTxn>> frontend_queues_;
+  uint64_t frontend_size_ = 0;
 
   double clock_period_;
   unsigned int queue_size_;

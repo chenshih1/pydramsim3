@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Frontend queue is sharded by `(channel, read/write)` instead of one
+  flat deque.  Draining a deep frontend is O(channels) per cycle (admit
+  from each queue's head) rather than O(frontend depth) with mid-deque
+  erase, so bulk `submit` + `drain` / `replay` no longer quadratic in
+  parked depth.  HOL bypass across channels and across read vs write is
+  unchanged.  Empty-frontend ticks skip the drain; `run_trace` waits on
+  `WillAccept` before `AddTransaction` to avoid skewing DRAMsim3
+  interarrival stats on rejected submits.
+
 ## [0.4.1] - 2026-08-25
 
 ### Added
